@@ -4,6 +4,7 @@
 
 #include <hyprland/src/render/decorations/IHyprWindowDecoration.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
+#include <hyprland/src/render/gl/GLTexture.hpp>
 #include <hyprland/src/devices/IPointer.hpp>
 #include <hyprland/src/devices/ITouch.hpp>
 #include <hyprland/src/desktop/rule/windowRule/WindowRule.hpp>
@@ -48,52 +49,51 @@ class CHyprBar : public IHyprWindowDecoration {
     PHLWINDOW                          getOwner();
 
     void                               updateRules();
+    void                               onConfigReloaded();
 
     WP<CHyprBar>                       m_self;
 
   private:
-    SBoxExtents               m_seExtents;
+    SBoxExtents                m_seExtents;
 
-    PHLWINDOWREF              m_pWindow;
+    PHLWINDOWREF               m_pWindow;
 
-    CBox                      m_bAssignedBox;
+    CBox                       m_bAssignedBox;
 
-    SP<CTexture>              m_pTextTex;
-    SP<CTexture>              m_pButtonsTex;
+    SP<Render::ITexture>       m_pTextTex;
 
-    bool                      m_bWindowSizeChanged = false;
-    bool                      m_hidden             = false;
-    bool                      m_bTitleColorChanged = false;
-    bool                      m_bButtonHovered     = false;
-    bool                      m_bLastEnabledState  = false;
-    bool                      m_bWindowHasFocus    = false;
-    std::optional<CHyprColor> m_bForcedBarColor;
-    std::optional<CHyprColor> m_bForcedTitleColor;
+    bool                       m_bWindowSizeChanged = false;
+    bool                       m_hidden             = false;
+    bool                       m_bTitleColorChanged = false;
+    bool                       m_bButtonHovered     = false;
+    bool                       m_bLastEnabledState  = false;
+    bool                       m_bWindowHasFocus    = false;
+    std::optional<CHyprColor>  m_bForcedBarColor;
+    std::optional<CHyprColor>  m_bForcedTitleColor;
 
-    Time::steady_tp           m_lastMouseDown = Time::steadyNow();
+    Time::steady_tp            m_lastMouseDown = Time::steadyNow();
 
-    PHLANIMVAR<CHyprColor>    m_cRealBarColor;
+    PHLANIMVAR<CHyprColor>     m_cRealBarColor;
 
-    Vector2D                  cursorRelativeToBar();
+    Vector2D                   cursorRelativeToBar();
 
-    void                      renderPass(PHLMONITOR, float const& a);
-    void                      renderBarTitle(const Vector2D& bufferSize, const float scale);
-    void                      renderText(SP<CTexture> out, const std::string& text, const CHyprColor& color, const Vector2D& bufferSize, const float scale, const int fontSize);
-    void                      renderBarButtons(const Vector2D& bufferSize, const float scale);
-    void                      renderBarButtonsText(CBox* barBox, const float scale, const float a);
-    void                      damageOnButtonHover();
+    void                       renderPass(PHLMONITOR, float const& a);
+    void                       renderBarTitle(const Vector2D& bufferSize, const float scale);
+    void renderBarButtons(CBox* barBox, const float scale, const float a);
+    void renderBarButtonsText(CBox* barBox, const float scale, const float a);
+    void damageOnButtonHover();
 
-    bool                      inputIsValid();
-    void                      onMouseButton(Event::SCallbackInfo& info, IPointer::SButtonEvent e);
-    void                      onTouchDown(Event::SCallbackInfo& info, ITouch::SDownEvent e);
-    void                      onTouchUp(Event::SCallbackInfo& info, ITouch::SUpEvent e);
-    void                      onMouseMove(Vector2D coords);
-    void                      onTouchMove(Event::SCallbackInfo& info, ITouch::SMotionEvent e);
+    bool inputIsValid();
+    void onMouseButton(Event::SCallbackInfo& info, IPointer::SButtonEvent e);
+    void onTouchDown(Event::SCallbackInfo& info, ITouch::SDownEvent e);
+    void onTouchUp(Event::SCallbackInfo& info, ITouch::SUpEvent e);
+    void onMouseMove(Vector2D coords);
+    void onTouchMove(Event::SCallbackInfo& info, ITouch::SMotionEvent e);
 
-    void                      handleDownEvent(Event::SCallbackInfo& info, std::optional<ITouch::SDownEvent> touchEvent);
-    void                      handleUpEvent(Event::SCallbackInfo& info);
-    void                      handleMovement();
-    bool doButtonPress(Hyprlang::INT* const* PBARPADDING, Hyprlang::INT* const* PBARBUTTONPADDING, Hyprlang::INT* const* PHEIGHT, Vector2D COORDS, bool BUTTONSRIGHT);
+    void handleDownEvent(Event::SCallbackInfo& info, std::optional<ITouch::SDownEvent> touchEvent);
+    void handleUpEvent(Event::SCallbackInfo& info);
+    void handleMovement();
+    bool doButtonPress(Config::INTEGER barPadding, Config::INTEGER barButtonPadding, Config::INTEGER barHeight, Vector2D COORDS, bool BUTTONSRIGHT);
 
     CBox assignedBoxGlobal();
 
@@ -118,7 +118,7 @@ class CHyprBar : public IHyprWindowDecoration {
     // for dynamic updates
     int    m_iLastHeight = 0;
 
-    size_t getVisibleButtonCount(Hyprlang::INT* const* PBARBUTTONPADDING, Hyprlang::INT* const* PBARPADDING, const Vector2D& bufferSize, const float scale);
+    size_t getVisibleButtonCount(Config::INTEGER barButtonPadding, Config::INTEGER barPadding, const Vector2D& bufferSize, const float scale);
 
     friend class CBarPassElement;
 };

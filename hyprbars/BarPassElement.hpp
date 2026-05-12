@@ -13,13 +13,17 @@ class CBarPassElement : public IPassElement {
     CBarPassElement(const SBarData& data_);
     virtual ~CBarPassElement() = default;
 
-    virtual void                draw(const CRegion& damage);
-    virtual bool                needsLiveBlur();
-    virtual bool                needsPrecomputeBlur();
-    virtual std::optional<CBox> boundingBox();
+    virtual std::vector<UP<IPassElement>> draw() override;
+    virtual bool                          needsLiveBlur() override;
+    virtual bool                          needsPrecomputeBlur() override;
+    virtual std::optional<CBox>           boundingBox() override;
 
-    virtual const char*         passName() {
+    virtual const char*                   passName() override {
         return "CBarPassElement";
+    }
+
+    virtual ePassElementType type() override {
+        return EK_CUSTOM;
     }
 
   private:

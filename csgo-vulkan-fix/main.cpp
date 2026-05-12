@@ -10,8 +10,15 @@
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/config/values/types/BoolValue.hpp>
+#include <hyprland/src/config/lua/bindings/LuaBindingsInternal.hpp>
 
 #include "globals.hpp"
+
+extern "C" {
+#include <lua.h>
+#include <lauxlib.h>
+}
 
 #include <hyprutils/string/ConstVarList.hpp>
 using namespace Hyprutils::String;
@@ -23,6 +30,10 @@ inline CFunctionHook* g_pWLSurfaceDamageHook = nullptr;
 typedef void (*origMotion)(CSeatManager*, uint32_t, const Vector2D&);
 typedef void (*origSurfaceSize)(CXWaylandSurface*, const CBox&);
 typedef CRegion (*origWLSurfaceDamage)(Desktop::View::CWLSurface*);
+
+static struct {
+    SP<Config::Values::CBoolValue> fixMouse;
+} configValues;
 
 // Do NOT change this function.
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -46,8 +57,6 @@ static const SAppConfig* getAppConfig(const std::string& appClass) {
 }
 
 void hkNotifyMotion(CSeatManager* thisptr, uint32_t time_msec, const Vector2D& local) {
-    static auto* const PFIX = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:csgo-vulkan-fix:fix_mouse")->getDataStaticPtr();
-
     Vector2D           newCoords  = local;
     auto               focusState = Desktop::focusState();
     auto               window     = focusState->window();
@@ -55,7 +64,7 @@ void hkNotifyMotion(CSeatManager* thisptr, uint32_t time_msec, const Vector2D& l
 
     const auto         CONFIG = window && monitor ? getAppConfig(window->m_initialClass) : nullptr;
 
-    if (**PFIX && CONFIG) {
+    if (configValues.fixMouse->value() && CONFIG) {
         // fix the coords
         newCoords.x *= (CONFIG->res.x / monitor->m_size.x) / window->m_X11SurfaceScaledBy;
         newCoords.y *= (CONFIG->res.y / monitor->m_size.y) / window->m_X11SurfaceScaledBy;
@@ -109,6 +118,50 @@ CRegion hkWLSurfaceDamage(Desktop::View::CWLSurface* thisptr) {
     return RG;
 }
 
+int vkfixAppLua(lua_State* L) {
+    if (!lua_istable(L, 1))
+        return Config::Lua::Bindings::Internal::configError(L, "vkfix_app: expected a table { app, w, h }");
+
+    SAppConfig config;
+
+    {
+        Hyprutils::Utils::CScopeGuard x([L] { lua_pop(L, 1); });
+
+        lua_getfield(L, 1, "app");
+        
+        if (!lua_isstring(L, -1))
+            return Config::Lua::Bindings::Internal::configError(L, "vkfix_app: app must be a class string");
+
+        config.szClass = lua_tostring(L, -1);
+    }
+
+    {
+        Hyprutils::Utils::CScopeGuard x([L] { lua_pop(L, 1); });
+
+        lua_getfield(L, 1, "w");
+        
+        if (!lua_isinteger(L, -1))
+            return Config::Lua::Bindings::Internal::configError(L, "vkfix_app: w must be an integer");
+
+        config.res.x = lua_tointeger(L, -1);
+    }
+
+    {
+        Hyprutils::Utils::CScopeGuard x([L] { lua_pop(L, 1); });
+
+        lua_getfield(L, 1, "h");
+        
+        if (!lua_isinteger(L, -1))
+            return Config::Lua::Bindings::Internal::configError(L, "vkfix_app: h must be an integer");
+
+        config.res.y = lua_tointeger(L, -1);
+    }
+
+    g_appConfigs.emplace_back(std::move(config));
+
+    return 0;
+}
+
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
@@ -121,47 +174,45 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("[vkfix] Version mismatch");
     }
 
-    HyprlandAPI::addConfigValue(PHANDLE, "plugin:csgo-vulkan-fix:res_w", Hyprlang::INT{1680});
-    HyprlandAPI::addConfigValue(PHANDLE, "plugin:csgo-vulkan-fix:res_h", Hyprlang::INT{1050});
-    HyprlandAPI::addConfigValue(PHANDLE, "plugin:csgo-vulkan-fix:fix_mouse", Hyprlang::INT{1});
-    HyprlandAPI::addConfigValue(PHANDLE, "plugin:csgo-vulkan-fix:class", Hyprlang::STRING{"cs2"});
+    static auto P = Event::bus()->m_events.config.preReload.listen([&] { g_appConfigs.clear(); });
 
-    static auto P = Event::bus()->m_events.config.preReload.listen([&] {
-        g_appConfigs.clear();
+    if (Config::mgr()->type() == Config::CONFIG_LEGACY) {
+        HyprlandAPI::addConfigKeyword(
+            PHANDLE, "vkfix-app",
+            [](const char* l, const char* r) -> Hyprlang::CParseResult {
+                const std::string      str = r;
+                CConstVarList          data(str, 0, ',', true);
 
-        static auto* const RESX   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:csgo-vulkan-fix:res_w")->getDataStaticPtr();
-        static auto* const RESY   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:csgo-vulkan-fix:res_h")->getDataStaticPtr();
-        static auto* const PCLASS = (Hyprlang::STRING const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:csgo-vulkan-fix:class")->getDataStaticPtr();
+                Hyprlang::CParseResult result;
 
-        g_appConfigs.emplace_back(SAppConfig{.szClass = *PCLASS, .res = Vector2D{(int)**RESX, (int)**RESY}});
-    });
+                if (data.size() != 3) {
+                    result.setError("vkfix-app requires 3 params");
+                    return result;
+                }
 
-    HyprlandAPI::addConfigKeyword(
-        PHANDLE, "vkfix-app",
-        [](const char* l, const char* r) -> Hyprlang::CParseResult {
-            const std::string      str = r;
-            CConstVarList          data(str, 0, ',', true);
+                try {
+                    SAppConfig config;
+                    config.szClass = data[0];
+                    config.res     = Vector2D{std::stoi(std::string{data[1]}), std::stoi(std::string{data[2]})};
+                    g_appConfigs.emplace_back(std::move(config));
+                } catch (std::exception& e) {
+                    result.setError("failed to parse line");
+                    return result;
+                }
 
-            Hyprlang::CParseResult result;
-
-            if (data.size() != 3) {
-                result.setError("vkfix-app requires 3 params");
                 return result;
-            }
+            },
+            Hyprlang::SHandlerOptions{});
+    } else if (Config::mgr()->type() == Config::CONFIG_LUA) {
+        HyprlandAPI::addLuaFunction(PHANDLE, "csgo_vulkan_fix", "vkfix_app", ::vkfixAppLua);
+    } else {
+        HyprlandAPI::addNotification(PHANDLE, "[csgo-vulkan-fix] Failure in initialization: Failed to get a valid config manager", CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
+        throw std::runtime_error("[vkfix] Config manager bad");
+    }
 
-            try {
-                SAppConfig config;
-                config.szClass = data[0];
-                config.res     = Vector2D{std::stoi(std::string{data[1]}), std::stoi(std::string{data[2]})};
-                g_appConfigs.emplace_back(std::move(config));
-            } catch (std::exception& e) {
-                result.setError("failed to parse line");
-                return result;
-            }
-
-            return result;
-        },
-        Hyprlang::SHandlerOptions{});
+    configValues.fixMouse =
+        makeShared<Config::Values::CBoolValue>("plugin:csgo_vulkan_fix:fix_mouse", "Whether to fix the mouse position. A select few apps might be wonky with this.", true);
+    HyprlandAPI::addConfigValueV2(PHANDLE, configValues.fixMouse);
 
     auto FNS = HyprlandAPI::findFunctionsByName(PHANDLE, "sendPointerMotion");
     for (auto& fn : FNS) {
@@ -211,5 +262,5 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    ;
+    configValues = {};
 }
