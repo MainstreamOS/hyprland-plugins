@@ -2,21 +2,26 @@
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/desktop/state/LayerState.hpp>
+#include <hyprland/src/desktop/state/ViewHitTester.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/LayerSurface.hpp>
 #include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/config/shared/animation/AnimationTree.hpp>
+#include <hyprland/src/config/shared/parserUtils/ParserUtils.hpp>
 #include <hyprland/src/config/supplementary/executor/Executor.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
-#include <hyprland/src/managers/animation/AnimationManager.hpp>
+#include <hyprland/src/animation/AnimationManager.hpp>
 #include <hyprland/src/protocols/LayerShell.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
-#include <hyprland/src/config/shared/parserUtils/ParserUtils.hpp> // 0.55: configStringToInt -> Config::ParserUtils::parseColor
+#include <hyprland/src/state/MonitorState.hpp>
 
 #include "globals.hpp"
 #include "BarPassElement.hpp"
@@ -44,8 +49,8 @@ CHyprBar::CHyprBar(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow) {
     m_pTouchMoveCallback = Event::bus()->m_events.input.touch.motion.listen([&](ITouch::SMotionEvent e, Event::SCallbackInfo& info) { onTouchMove(info, e); });
     m_pMouseMoveCallback = Event::bus()->m_events.input.mouse.move.listen([&](Vector2D c, Event::SCallbackInfo& info) { onMouseMove(c); });
 
-    g_pAnimationManager->createAnimation(configColor(g_pGlobalState->config.barColor->value()), m_cRealBarColor, Config::animationTree()->getAnimationPropertyConfig("border"),
-                                         pWindow, AVARDAMAGE_NONE);
+    Animation::mgr()->createAnimation(configColor(g_pGlobalState->config.barColor->value()), m_cRealBarColor, Config::animationTree()->getAnimationPropertyConfig("border"),
+                                      pWindow, AVARDAMAGE_NONE);
     m_cRealBarColor->setUpdateCallback([&](auto) { damageEntire(); });
 }
 
@@ -79,37 +84,38 @@ std::string CHyprBar::getDisplayName() {
 }
 
 bool CHyprBar::inputIsValid() {
-    if (!g_pGlobalState->config.enabled->value())
+    if (m_hidden)
         return false;
 
-    if (!m_pWindow->m_workspace || !m_pWindow->m_workspace->isVisible() || !g_pInputManager->m_exclusiveLSes.empty() ||
-        (g_pSeatManager->m_seatGrab && !g_pSeatManager->m_seatGrab->accepts(m_pWindow->wlSurface()->resource())))
+    if (g_pSeatManager->m_seatGrab && !g_pSeatManager->m_seatGrab->accepts(m_pWindow->wlSurface()->resource()))
         return false;
 
-    const auto WINDOWATCURSOR = g_pCompositor->vectorToWindowUnified(g_pInputManager->getMouseCoordsInternal(),
-                                                                     Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING);
+    const auto MOUSE    = g_pInputManager->getMouseCoordsInternal();
+    auto       PMONITOR = Desktop::focusState()->monitor();
 
-    auto       focusState = Desktop::focusState();
-    auto       window     = focusState->window();
-    auto       monitor    = focusState->monitor();
+    if (!PMONITOR)
+        return false;
+
+    Desktop::CViewHitTester hitTester{*Desktop::viewState()};
+
+    const auto              WINDOWATCURSOR = hitTester.windowAt(MOUSE, Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING);
+
+    auto                    focusState = Desktop::focusState();
+    auto                    window     = focusState->window();
 
     if (WINDOWATCURSOR != m_pWindow && m_pWindow != window)
         return false;
 
-    // check if input is on top or overlay shell layers
-    auto     PMONITOR     = monitor;
     PHLLS    foundSurface = nullptr;
     Vector2D surfaceCoords;
 
-    // check top layer
-    g_pCompositor->vectorToLayerSurface(g_pInputManager->getMouseCoordsInternal(), &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP], &surfaceCoords, &foundSurface);
-
+    // Check Top Layer
+    hitTester.layerSurfaceAt(MOUSE, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP], &surfaceCoords, &foundSurface);
     if (foundSurface)
         return false;
-    // check overlay layer
-    g_pCompositor->vectorToLayerSurface(g_pInputManager->getMouseCoordsInternal(), &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY], &surfaceCoords,
-                                        &foundSurface);
 
+    // Check Overlay Layer
+    hitTester.layerSurfaceAt(MOUSE, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY], &surfaceCoords, &foundSurface);
     if (foundSurface)
         return false;
 
@@ -184,9 +190,15 @@ void CHyprBar::handleDownEvent(Event::SCallbackInfo& info, std::optional<ITouch:
     auto       COORDS = cursorRelativeToBar();
     if (m_bTouchEv) {
         ITouch::SDownEvent e        = touchEvent.value();
-        auto               PMONITOR = g_pCompositor->getMonitorFromName(!e.device->m_boundOutput.empty() ? e.device->m_boundOutput : "");
-        PMONITOR                    = PMONITOR ? PMONITOR : Desktop::focusState()->monitor();
-        COORDS = Vector2D(PMONITOR->m_position.x + e.pos.x * PMONITOR->m_size.x, PMONITOR->m_position.y + e.pos.y * PMONITOR->m_size.y) - assignedBoxGlobal().pos();
+        PHLMONITOR         PMONITOR = nullptr;
+        for (auto& m : State::monitorState()->monitors()) {
+            if (m->m_name == (!e.device->m_boundOutput.empty() ? e.device->m_boundOutput : "")) {
+                PMONITOR = m;
+                break;
+            }
+        }
+        PMONITOR = PMONITOR ? PMONITOR : Desktop::focusState()->monitor();
+        COORDS   = Vector2D(PMONITOR->m_position.x + e.pos.x * PMONITOR->m_size.x, PMONITOR->m_position.y + e.pos.y * PMONITOR->m_size.y) - assignedBoxGlobal().pos();
     }
 
     const auto HEIGHT           = g_pGlobalState->config.barHeight->value();
@@ -216,7 +228,7 @@ void CHyprBar::handleDownEvent(Event::SCallbackInfo& info, std::optional<ITouch:
         Desktop::focusState()->fullWindowFocus(PWINDOW, Desktop::FOCUS_REASON_CLICK);
 
     if (PWINDOW->m_isFloating)
-        g_pCompositor->changeWindowZOrder(PWINDOW, true);
+        Desktop::windowState()->raise(PWINDOW);
 
     info.cancelled   = true;
     m_bCancelledDown = true;
@@ -247,7 +259,7 @@ void CHyprBar::handleUpEvent(Event::SCallbackInfo& info) {
         g_pKeybindManager->changeMouseBindMode(MBIND_INVALID);
         m_bDraggingThis = false;
         if (m_bTouchEv)
-            Config::Actions::floatWindow(Config::Actions::eTogglableAction::TOGGLE_ACTION_DISABLE);
+            (void)Config::Actions::floatWindow(Config::Actions::eTogglableAction::TOGGLE_ACTION_DISABLE);
 
         Log::logger->log(Log::DEBUG, "[hyprbars] Dragging ended on {:x}", (uintptr_t)m_pWindow.lock().get());
     }
@@ -286,6 +298,7 @@ bool CHyprBar::doButtonPress(Config::INTEGER barPadding, Config::INTEGER barButt
 void CHyprBar::renderBarTitle(const Vector2D& bufferSize, const float scale) {
     const auto COLORVAL         = g_pGlobalState->config.textColor->value();
     const auto SIZE             = g_pGlobalState->config.barTextSize->value();
+    const auto WEIGHT           = g_pGlobalState->config.barTextWeight->value();
     const auto FONT             = g_pGlobalState->config.barTextFont->value();
     const auto ALIGN            = g_pGlobalState->config.barTextAlign->value();
     const auto BARPADDING       = g_pGlobalState->config.barPadding->value();
@@ -308,7 +321,7 @@ void CHyprBar::renderBarTitle(const Vector2D& bufferSize, const float scale) {
     }
 
     const CHyprColor COLOR = m_bForcedTitleColor.value_or(configColor(COLORVAL));
-    m_pTextTex             = g_pHyprRenderer->renderText(m_szLastTitle, COLOR, scaledSize, false, FONT, maxWidth);
+    m_pTextTex             = g_pHyprRenderer->renderText(m_szLastTitle, COLOR, scaledSize, false, FONT, maxWidth, WEIGHT.m_value);
 }
 
 size_t CHyprBar::getVisibleButtonCount(Config::INTEGER barButtonPadding, Config::INTEGER barPadding, const Vector2D& bufferSize, const float scale) {
@@ -436,16 +449,16 @@ void CHyprBar::draw(PHLMONITOR pMonitor, const float& a) {
 }
 
 void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
-    const auto         PWINDOW = m_pWindow.lock();
+    const auto  PWINDOW = m_pWindow.lock();
 
-    static auto* const PENABLEBLURGLOBAL = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "decoration:blur:enabled")->getDataStaticPtr();
-    const auto         BARCOLOR          = g_pGlobalState->config.barColor->value();
-    const auto         HEIGHT            = g_pGlobalState->config.barHeight->value();
-    const auto         PRECEDENCE        = g_pGlobalState->config.barPrecedenceOverBorder->value();
-    const auto         ALIGNBUTTONS      = g_pGlobalState->config.barButtonsAlignment->value();
-    const auto         ENABLETITLE       = g_pGlobalState->config.barTitleEnabled->value();
-    const auto         ENABLEBLUR        = g_pGlobalState->config.barBlur->value();
-    const auto         INACTIVECOLOR     = g_pGlobalState->config.inactiveButtonColor->value();
+    static auto PENABLEBLURGLOBAL = CConfigValue<Config::BOOL>("decoration:blur:enabled");
+    const auto  BARCOLOR          = g_pGlobalState->config.barColor->value();
+    const auto  HEIGHT            = g_pGlobalState->config.barHeight->value();
+    const auto  PRECEDENCE        = g_pGlobalState->config.barPrecedenceOverBorder->value();
+    const auto  ALIGNBUTTONS      = g_pGlobalState->config.barButtonsAlignment->value();
+    const auto  ENABLETITLE       = g_pGlobalState->config.barTitleEnabled->value();
+    const auto  ENABLEBLUR        = g_pGlobalState->config.barBlur->value();
+    const auto  INACTIVECOLOR     = g_pGlobalState->config.inactiveButtonColor->value();
 
     if (INACTIVECOLOR > 0) {
         bool currentWindowFocus = PWINDOW == Desktop::focusState()->window();
@@ -463,7 +476,7 @@ void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
 
     color.a *= a;
     const bool BUTTONSRIGHT = ALIGNBUTTONS != "left";
-    const bool SHOULDBLUR   = ENABLEBLUR && **PENABLEBLURGLOBAL && color.a < 1.F;
+    const bool SHOULDBLUR   = ENABLEBLUR && *PENABLEBLURGLOBAL && color.a < 1.F;
 
     if (HEIGHT < 1) {
         m_iLastHeight = HEIGHT;

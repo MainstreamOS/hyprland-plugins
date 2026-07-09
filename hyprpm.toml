@@ -46,7 +46,12 @@ commit_pins = [
     ["0002f148c9a4fe421a9d33c0faa5528cdc411e62", "6acc0738f298f5efe40a99db2c12449112d65633"], # 0.54.0
     ["4b07770b9ef1cceb2e6f56d33538aaffb9186b9c", "6acc0738f298f5efe40a99db2c12449112d65633"], # 0.54.1
     ["59f9f2688ac508a0584d1462151195a6c4992f99", "6acc0738f298f5efe40a99db2c12449112d65633"], # 0.54.2
-    ["521ece463c4a9d3d128670688a34756805a4328f", "6acc0738f298f5efe40a99db2c12449112d65633"]  # 0.54.3
+    ["521ece463c4a9d3d128670688a34756805a4328f", "6acc0738f298f5efe40a99db2c12449112d65633"], # 0.54.3
+    ["af923e30d1d24f1f4a4f5cb8308065173c1d9539", "3aa21f2e0ca72412f1b434c3126f8f1fec3c716c"], # 0.55.0
+    ["a47147bc095e5b3be3eb8bd04f0ac242b968cd4d", "3aa21f2e0ca72412f1b434c3126f8f1fec3c716c"], # 0.55.1
+    ["39d7e209c79d451efab1b21151d5938289da838d", "3aa21f2e0ca72412f1b434c3126f8f1fec3c716c"], # 0.55.2
+    ["fe5fe79a29ac3adaf3e75560b2f4b7a6d58b31c9", "3aa21f2e0ca72412f1b434c3126f8f1fec3c716c"], # 0.55.3
+    ["a0136d8c04687bb36eb8a28eb9d1ff92aea99704", "3aa21f2e0ca72412f1b434c3126f8f1fec3c716c"]  # 0.55.4
 ]
 
 [borders-plus-plus]
@@ -72,49 +77,6 @@ output = "hyprbars/hyprbars.so"
 build = [
     "make -C hyprbars all",
 ]
-
-[hyprtrails]
-description = "A plugin to add trails behind moving windows"
-authors = ["Vaxry"]
-output = "hyprtrails/hyprtrails.so"
-build = [
-    "make -C hyprtrails all",
-]
-
-[hyprwinwrap]
-description = "A clone of xwinwrap for Hyprland"
-authors = ["Vaxry"]
-output = "hyprwinwrap/hyprwinwrap.so"
-build = [
-    "make -C hyprwinwrap all",
-]
-
-[hyprexpo]
-description = "A plugin to add expo (overlay) for workspaces"
-authors = ["Vaxry"]
-output = "hyprexpo/hyprexpo.so"
-build = [
-    "make -C hyprexpo all",
-]
-since_hyprland = 4364
-
-[xtra-dispatchers]
-description = "A plugin to add some extra dispatchers"
-authors = ["Vaxry"]
-output = "xtra-dispatchers/xtra-dispatchers.so"
-build = [
-    "make -C xtra-dispatchers all",
-]
-since_hyprland = 5573
-
-[hyprscrolling]
-description = "A plugin to add a scrolling layout"
-authors = ["Vaxry"]
-output = "hyprscrolling/hyprscrolling.so"
-build = [
-    "make -C hyprscrolling all",
-]
-since_hyprland = 6066
 
 [hyprfocus]
 description = "Flashfocus for Hyprland"

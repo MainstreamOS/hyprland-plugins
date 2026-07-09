@@ -3,8 +3,10 @@
 #include <unistd.h>
 
 #include <any>
+#include <array>
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/event/EventBus.hpp>
@@ -18,6 +20,9 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 }
 
 static void onNewWindow(PHLWINDOW window) {
+    if (std::ranges::any_of(window->m_windowDecorations, [](const auto& d) { return d->getDisplayName() == "Borders++"; }))
+        return;
+
     HyprlandAPI::addWindowDecoration(PHANDLE, window, makeUnique<CBordersPlusPlus>(window));
 }
 
@@ -33,12 +38,25 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("[bpp] Version mismatch");
     }
 
-    HyprlandAPI::addConfigValue(PHANDLE, "plugin:borders-plus-plus:add_borders", Hyprlang::INT{1});
-    HyprlandAPI::addConfigValue(PHANDLE, "plugin:borders-plus-plus:natural_rounding", Hyprlang::INT{1});
+    vars.addBorders =
+        makeShared<Config::Values::CIntValue>("plugin:borders-plus-plus:add_borders", "How many extra borders to draw", 1, Config::Values::SIntValueOptions{.min = 0, .max = 9});
+    vars.naturalRounding = makeShared<Config::Values::CBoolValue>("plugin:borders-plus-plus:natural_rounding", "Use the window's original rounding", true);
+
+    HyprlandAPI::addConfigValueV2(PHANDLE, vars.addBorders);
+    HyprlandAPI::addConfigValueV2(PHANDLE, vars.naturalRounding);
+
+    static std::array<std::string, 9> borderColorNames;
+    static std::array<std::string, 9> borderSizeNames;
 
     for (size_t i = 0; i < 9; ++i) {
-        HyprlandAPI::addConfigValue(PHANDLE, "plugin:borders-plus-plus:col.border_" + std::to_string(i + 1), Hyprlang::INT{*configStringToInt("rgba(000000ee)")});
-        HyprlandAPI::addConfigValue(PHANDLE, "plugin:borders-plus-plus:border_size_" + std::to_string(i + 1), Hyprlang::INT{-1});
+        borderColorNames[i] = "plugin:borders-plus-plus:col.border_" + std::to_string(i + 1);
+        borderSizeNames[i]  = "plugin:borders-plus-plus:border_size_" + std::to_string(i + 1);
+
+        vars.borderColors[i] = makeShared<Config::Values::CColorValue>(borderColorNames[i].c_str(), "Color of the extra border", 0xee000000);
+        vars.borderSizes[i]  = makeShared<Config::Values::CIntValue>(borderSizeNames[i].c_str(), "Size of the extra border", -1);
+
+        HyprlandAPI::addConfigValueV2(PHANDLE, vars.borderColors[i]);
+        HyprlandAPI::addConfigValueV2(PHANDLE, vars.borderSizes[i]);
     }
 
     HyprlandAPI::reloadConfig();
@@ -46,7 +64,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     static auto P = Event::bus()->m_events.window.open.listen([&](PHLWINDOW w) { onNewWindow(w); });
 
     // add deco to existing windows
-    for (auto& w : g_pCompositor->m_windows) {
+    for (auto& w : Desktop::windowState()->windows()) {
         if (w->isHidden() || !w->m_isMapped)
             continue;
 
