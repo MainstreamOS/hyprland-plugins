@@ -4,18 +4,16 @@
 
 #include <any>
 #include <hyprland/src/Compositor.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
-#include <hyprland/src/config/shared/parserUtils/ParserUtils.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/desktop/rule/windowRule/WindowRuleEffectContainer.hpp>
 #include <hyprland/src/config/lua/bindings/LuaBindingsInternal.hpp>
 #include <hyprland/src/config/lua/types/LuaConfigColor.hpp>
 #include <hyprland/src/state/MonitorState.hpp>
-
-#include <hyprutils/string/VarList.hpp>
 
 #include <algorithm>
 
@@ -33,11 +31,11 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 }
 
 static void onNewWindow(PHLWINDOW window) {
-    if (!window->m_X11DoesntWantBorders) {
-        if (std::ranges::any_of(window->m_windowDecorations, [](const auto& d) { return d->getDisplayName() == "Hyprbar"; }))
+    if (true) {
+        if (std::ranges::any_of(window->presentation().decorations(), [](const auto& d) { return d->getDisplayName() == "Hyprbar"; }))
             return;
 
-        auto bar = makeUnique<CHyprBar>(window);
+        auto bar = Hyprutils::Memory::makeShared<CHyprBar>(window);
         g_pGlobalState->bars.emplace_back(bar);
         bar->m_self = bar;
         HyprlandAPI::addWindowDecoration(PHANDLE, window, std::move(bar));
@@ -64,56 +62,7 @@ static void onUpdateWindowRules(PHLWINDOW window) {
         return;
 
     (*BARIT)->updateRules();
-    window->updateWindowDecos();
-}
-
-Hyprlang::CParseResult onNewButton(const char* K, const char* V) {
-    std::string                 v = V;
-    Hyprutils::String::CVarList vars(v);
-
-    Hyprlang::CParseResult      result;
-
-    // hyprbars-button = bgcolor, size, icon, action, fgcolor
-
-    if (vars[0].empty() || vars[1].empty()) {
-        result.setError("bgcolor and size cannot be empty");
-        return result;
-    }
-
-    float size = 10;
-    try {
-        size = std::stof(vars[1]);
-    } catch (std::exception& e) {
-        result.setError("failed to parse size");
-        return result;
-    }
-
-    bool userfg  = false;
-    auto fgcolor = Config::ParserUtils::parseColor("rgb(ffffff)");
-    auto bgcolor = Config::ParserUtils::parseColor(vars[0]);
-
-    if (!bgcolor) {
-        result.setError("invalid bgcolor");
-        return result;
-    }
-
-    if (vars.size() == 5) {
-        userfg  = true;
-        fgcolor = Config::ParserUtils::parseColor(vars[4]);
-    }
-
-    if (!fgcolor) {
-        result.setError("invalid fgcolor");
-        return result;
-    }
-
-    g_pGlobalState->buttons.push_back(SHyprButton{vars[3], userfg, *fgcolor, *bgcolor, size, vars[2]});
-
-    for (auto& b : g_pGlobalState->bars) {
-        b->m_bButtonsDirty = true;
-    }
-
-    return result;
+    window->updateWindowData();
 }
 
 int newLuaButton(lua_State* L) {
@@ -252,16 +201,14 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.iconOnHover);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.onDoubleClick);
 
-    if (Config::mgr()->type() == Config::CONFIG_LEGACY)
-        HyprlandAPI::addConfigKeyword(PHANDLE, "plugin:hyprbars:hyprbars-button", onNewButton, Hyprlang::SHandlerOptions{});
-    else
-        HyprlandAPI::addLuaFunction(PHANDLE, "hyprbars", "add_button", ::newLuaButton);
+    HyprlandAPI::addLuaFunction(PHANDLE, "hyprbars", "add_button", ::newLuaButton);
+
     static auto P4 = Event::bus()->m_events.config.preReload.listen([&] { onPreConfigReload(); });
     static auto P5 = Event::bus()->m_events.config.reloaded.listen([&] { onConfigReloaded(); });
 
     // add deco to existing windows
     for (auto& w : Desktop::windowState()->windows()) {
-        if (w->isHidden() || !w->m_isMapped)
+        if (w->isHidden() || !validMapped(w))
             continue;
 
         onNewWindow(w);
