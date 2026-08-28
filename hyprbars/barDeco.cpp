@@ -517,8 +517,6 @@ void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
         if (windowBox.w < 1 || windowBox.h < 1)
             return;
 
-        glStencilMask(0xFF);
-
         glClearStencil(0);
         glClear(GL_STENCIL_BUFFER_BIT);
 
@@ -554,10 +552,10 @@ void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
 
     if (ROUNDING) {
         // cleanup stencil
-        glStencilMask(-1);
         glClearStencil(0);
         glClear(GL_STENCIL_BUFFER_BIT);
         g_pHyprOpenGL->setCapStatus(GL_STENCIL_TEST, false);
+        glStencilMask(-1);
         glStencilFunc(GL_ALWAYS, 1, 0xFF);
     }
 
