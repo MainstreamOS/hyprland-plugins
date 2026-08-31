@@ -5,7 +5,7 @@
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowQuery.hpp>
-#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/xwayland/XSurface.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
@@ -20,6 +20,9 @@ extern "C" {
 #include <lua.h>
 #include <lauxlib.h>
 }
+
+#include <hyprutils/string/ConstVarList.hpp>
+using namespace Hyprutils::String;
 
 // Methods
 inline CFunctionHook* g_pMouseMotionHook     = nullptr;
@@ -60,12 +63,12 @@ void hkNotifyMotion(CSeatManager* thisptr, uint32_t time_msec, const Vector2D& l
     auto               window     = focusState->window();
     auto               monitor    = focusState->monitor();
 
-    const auto         CONFIG = window && monitor ? getAppConfig(window->metadata().initialAppID()) : nullptr;
+    const auto         CONFIG = window && monitor ? getAppConfig(window->m_initialClass) : nullptr;
 
     if (configValues.fixMouse->value() && CONFIG) {
         // fix the coords
-        newCoords.x *= (CONFIG->res.x / monitor->m_size.x) / window->backend().surfaceScale();
-        newCoords.y *= (CONFIG->res.y / monitor->m_size.y) / window->backend().surfaceScale();
+        newCoords.x *= (CONFIG->res.x / monitor->m_size.x) / window->m_X11SurfaceScaledBy;
+        newCoords.y *= (CONFIG->res.y / monitor->m_size.y) / window->m_X11SurfaceScaledBy;
     }
 
     (*(origMotion)g_pMouseMotionHook->m_original)(thisptr, time_msec, newCoords);
@@ -88,7 +91,7 @@ void hkSetWindowSize(CXWaylandSurface* surface, const CBox& box) {
         return;
     }
 
-    if (const auto CONFIG = getAppConfig(PWINDOW->metadata().initialAppID()); CONFIG) {
+    if (const auto CONFIG = getAppConfig(PWINDOW->m_initialClass); CONFIG) {
         newBox.w = CONFIG->res.x;
         newBox.h = CONFIG->res.y;
 
@@ -103,7 +106,7 @@ CRegion hkWLSurfaceDamage(Desktop::View::CWLSurface* thisptr) {
 
     if (thisptr->exists() && Desktop::View::CWindow::fromView(thisptr->view())) {
         const auto WINDOW = Desktop::View::CWindow::fromView(thisptr->view());
-        const auto CONFIG = getAppConfig(WINDOW->metadata().initialAppID());
+        const auto CONFIG = getAppConfig(WINDOW->m_initialClass);
 
         if (CONFIG) {
             const auto PMONITOR = WINDOW->m_monitor.lock();
@@ -127,7 +130,7 @@ int vkfixAppLua(lua_State* L) {
         Hyprutils::Utils::CScopeGuard x([L] { lua_pop(L, 1); });
 
         lua_getfield(L, 1, "app");
-
+        
         if (!lua_isstring(L, -1))
             return Config::Lua::Bindings::Internal::configError(L, "vkfix_app: app must be a class string");
 
@@ -138,7 +141,7 @@ int vkfixAppLua(lua_State* L) {
         Hyprutils::Utils::CScopeGuard x([L] { lua_pop(L, 1); });
 
         lua_getfield(L, 1, "w");
-
+        
         if (!lua_isinteger(L, -1))
             return Config::Lua::Bindings::Internal::configError(L, "vkfix_app: w must be an integer");
 
@@ -149,7 +152,7 @@ int vkfixAppLua(lua_State* L) {
         Hyprutils::Utils::CScopeGuard x([L] { lua_pop(L, 1); });
 
         lua_getfield(L, 1, "h");
-
+        
         if (!lua_isinteger(L, -1))
             return Config::Lua::Bindings::Internal::configError(L, "vkfix_app: h must be an integer");
 
@@ -175,7 +178,39 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     static auto P = Event::bus()->m_events.config.preReload.listen([&] { g_appConfigs.clear(); });
 
-    HyprlandAPI::addLuaFunction(PHANDLE, "csgo_vulkan_fix", "vkfix_app", ::vkfixAppLua);
+    if (Config::mgr()->type() == Config::CONFIG_LEGACY) {
+        HyprlandAPI::addConfigKeyword(
+            PHANDLE, "vkfix-app",
+            [](const char* l, const char* r) -> Hyprlang::CParseResult {
+                const std::string      str = r;
+                CConstVarList          data(str, 0, ',', true);
+
+                Hyprlang::CParseResult result;
+
+                if (data.size() != 3) {
+                    result.setError("vkfix-app requires 3 params");
+                    return result;
+                }
+
+                try {
+                    SAppConfig config;
+                    config.szClass = data[0];
+                    config.res     = Vector2D{std::stoi(std::string{data[1]}), std::stoi(std::string{data[2]})};
+                    g_appConfigs.emplace_back(std::move(config));
+                } catch (std::exception& e) {
+                    result.setError("failed to parse line");
+                    return result;
+                }
+
+                return result;
+            },
+            Hyprlang::SHandlerOptions{});
+    } else if (Config::mgr()->type() == Config::CONFIG_LUA) {
+        HyprlandAPI::addLuaFunction(PHANDLE, "csgo_vulkan_fix", "vkfix_app", ::vkfixAppLua);
+    } else {
+        HyprlandAPI::addNotification(PHANDLE, "[csgo-vulkan-fix] Failure in initialization: Failed to get a valid config manager", CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
+        throw std::runtime_error("[vkfix] Config manager bad");
+    }
 
     configValues.fixMouse =
         makeShared<Config::Values::CBoolValue>("plugin:csgo_vulkan_fix:fix_mouse", "Whether to fix the mouse position. A select few apps might be wonky with this.", true);
