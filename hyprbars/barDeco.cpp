@@ -98,7 +98,10 @@ bool CHyprBar::inputIsValid() {
 
     Desktop::CViewHitTester hitTester{*Desktop::viewState()};
 
-    const auto              WINDOWATCURSOR = hitTester.windowAt(MOUSE, Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING);
+    // Judged by what is visible under the pointer. A window's resize strip
+    // reaches past its edge, and a strip lying over this bar would otherwise
+    // take the click meant for it, leaving a bar in plain sight ungrabbable.
+    const auto              WINDOWATCURSOR = hitTester.windowAt(MOUSE, Desktop::View::RESERVED_EXTENTS | Desktop::View::ALLOW_FLOATING);
 
     auto                    focusState = Desktop::focusState();
     auto                    window     = focusState->window();
