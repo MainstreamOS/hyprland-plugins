@@ -75,6 +75,7 @@ class CHyprBar : public IHyprWindowDecoration {
     Time::steady_tp            m_lastMouseDown = Time::steadyNow();
 
     PHLANIMVAR<CHyprColor>     m_cRealBarColor;
+    PHLANIMVAR<float>          m_fButtonsAlpha;
 
     Vector2D                   cursorRelativeToBar();
 

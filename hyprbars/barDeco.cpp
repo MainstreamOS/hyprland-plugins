@@ -52,6 +52,9 @@ CHyprBar::CHyprBar(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow) {
     Animation::mgr()->createAnimation(configColor(g_pGlobalState->config.barColor->value()), m_cRealBarColor, Config::animationTree()->getAnimationPropertyConfig("border"),
                                       pWindow, AVARDAMAGE_NONE);
     m_cRealBarColor->setUpdateCallback([&](auto) { damageEntire(); });
+
+    Animation::mgr()->createAnimation(0.F, m_fButtonsAlpha, Config::animationTree()->getAnimationPropertyConfig("fadeIn"), pWindow, AVARDAMAGE_NONE);
+    m_fButtonsAlpha->setUpdateCallback([&](auto) { damageEntire(); });
 }
 
 CHyprBar::~CHyprBar() {
@@ -162,6 +165,9 @@ void CHyprBar::onMouseMove(Vector2D coords) {
         const bool HOVERED = VECINRECT(COORDS, 0, 0, BOX.w, BOX.h);
         if (HOVERED != m_bBarHovered) {
             m_bBarHovered = HOVERED;
+            // They fade the way windows do, in and out at the user's own pace.
+            m_fButtonsAlpha->setConfig(Config::animationTree()->getAnimationPropertyConfig(HOVERED ? "fadeIn" : "fadeOut"));
+            *m_fButtonsAlpha = HOVERED ? 1.F : 0.F;
             damageEntire();
         }
     }
@@ -357,7 +363,8 @@ size_t CHyprBar::getVisibleButtonCount(Config::INTEGER barButtonPadding, Config:
 }
 
 void CHyprBar::renderBarButtons(CBox* barBox, const float scale, const float a) {
-    if (g_pGlobalState->config.buttonsOnHover->value() && !m_bBarHovered)
+    const float BUTTONSALPHA = g_pGlobalState->config.buttonsOnHover->value() ? m_fButtonsAlpha->value() : 1.F;
+    if (BUTTONSALPHA <= 0.F)
         return;
 
     const auto BARBUTTONPADDING = g_pGlobalState->config.barButtonPadding->value();
@@ -383,7 +390,7 @@ void CHyprBar::renderBarButtons(CBox* barBox, const float scale, const float a) 
                 button.iconTex = nullptr;
         }
 
-        color.a *= a;
+        color.a *= a * BUTTONSALPHA;
 
         CBox buttonBox = {barBox->x + (BUTTONSRIGHT ? barBox->w - offset - scaledButtonSize : offset), barBox->y + (barBox->h - scaledButtonSize) / 2.0, scaledButtonSize,
                           scaledButtonSize};
@@ -396,7 +403,8 @@ void CHyprBar::renderBarButtons(CBox* barBox, const float scale, const float a) 
 }
 
 void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float a) {
-    if (g_pGlobalState->config.buttonsOnHover->value() && !m_bBarHovered)
+    const float BUTTONSALPHA = g_pGlobalState->config.buttonsOnHover->value() ? m_fButtonsAlpha->value() : 1.F;
+    if (BUTTONSALPHA <= 0.F)
         return;
 
     const auto HEIGHT           = g_pGlobalState->config.barHeight->value();
@@ -445,7 +453,7 @@ void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float
         CBox       pos   = {iconX, iconY, button.iconTex->m_size.x, button.iconTex->m_size.y};
 
         if (!ICONONHOVER || (ICONONHOVER && m_iButtonHoverState > 0))
-            g_pHyprOpenGL->renderTexture(button.iconTex, pos, {.a = a});
+            g_pHyprOpenGL->renderTexture(button.iconTex, pos, {.a = a * BUTTONSALPHA});
         offset += scaledButtonsPad + scaledButtonSize;
 
         bool currentBit = (m_iButtonHoverState & (1 << i)) != 0;
