@@ -412,8 +412,12 @@ void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float
     int        offset        = BARPADDING * scale;
     float      noScaleOffset = BARPADDING;
 
+    if (g_pGlobalState->buttonIconScales.size() != g_pGlobalState->buttons.size())
+        g_pGlobalState->buttonIconScales.resize(g_pGlobalState->buttons.size());
+
     for (size_t i = 0; i < visibleCount; ++i) {
         auto&      button           = g_pGlobalState->buttons[i];
+        auto&      iconScale        = g_pGlobalState->buttonIconScales[i];
         const auto scaledButtonSize = button.size * scale;
         const auto scaledButtonsPad = BARBUTTONPADDING * scale;
 
@@ -423,14 +427,14 @@ void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float
         bool       hovering   = VECINRECT(COORDS, currentPos.x, currentPos.y, currentPos.x + button.size + BARBUTTONPADDING, currentPos.y + button.size);
         noScaleOffset += BARBUTTONPADDING + button.size;
 
-        const bool NEEDICON = !button.icon.empty() && (!button.iconTex || button.iconTex->m_texID == 0 || !button.m_fIconScale.has_value() ||
-                                                      std::abs(button.m_fIconScale.value_or(0.F) - scale) > 1e-6);
+        const bool NEEDICON = !button.icon.empty() && (!button.iconTex || button.iconTex->m_texID == 0 || !iconScale.has_value() ||
+                                                      std::abs(iconScale.value_or(0.F) - scale) > 1e-6);
         if (NEEDICON) {
             // render icon
             auto fgcol = button.userfg ? button.fgcol : (button.bgcol.r + button.bgcol.g + button.bgcol.b < 1) ? CHyprColor(0xFFFFFFFF) : CHyprColor(0xFF000000);
 
             button.iconTex   = g_pHyprRenderer->renderText(button.icon, fgcol, std::round(button.size * 0.62 * scale), false, "sans", scaledButtonSize);
-            button.m_fIconScale = scale;
+            iconScale        = scale;
         }
 
         if (!button.iconTex || button.iconTex->m_texID == 0)

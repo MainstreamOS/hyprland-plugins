@@ -12,6 +12,10 @@
 
 inline HANDLE PHANDLE = nullptr;
 
+// Scroll Overview reads the button list straight out of g_pGlobalState through
+// its own copy of this layout, so a member added here makes it read and write
+// the wrong bytes and abort the compositor. Anything more a button needs goes
+// in SGlobalState instead, beside the list.
 struct SHyprButton {
     std::string          cmd     = "";
     bool                 userfg  = false;
@@ -20,13 +24,14 @@ struct SHyprButton {
     float                size    = 10;
     std::string          icon    = "";
     SP<Render::ITexture> iconTex;
-    std::optional<float> m_fIconScale;
 };
 
 class CHyprBar;
 
 struct SGlobalState {
     std::vector<SHyprButton>  buttons;
+    // The scale each button's icon texture was rendered at, by button index.
+    std::vector<std::optional<float>> buttonIconScales;
     std::vector<WP<CHyprBar>> bars;
     uint32_t                  nobarRuleIdx      = 0;
     uint32_t                  barColorRuleIdx   = 0;

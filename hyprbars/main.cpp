@@ -44,8 +44,13 @@ static void onNewWindow(PHLWINDOW window) {
     }
 }
 
+// Scroll Overview checks its copy of SHyprButton against this before it
+// touches the button list.
+extern "C" APICALL const size_t g_hyprbarsButtonSize = sizeof(SHyprButton);
+
 static void onPreConfigReload() {
     g_pGlobalState->buttons.clear();
+    g_pGlobalState->buttonIconScales.clear();
 }
 
 static void onConfigReloaded() {
