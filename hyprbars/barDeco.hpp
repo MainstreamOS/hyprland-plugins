@@ -51,6 +51,8 @@ class CHyprBar : public IHyprWindowDecoration {
     void                               updateRules();
     void                               onConfigReloaded();
 
+    static void                        onMouseAxis(IPointer::SAxisEvent e, Event::SCallbackInfo& info);
+
     WP<CHyprBar>                       m_self;
 
   private:
@@ -100,7 +102,11 @@ class CHyprBar : public IHyprWindowDecoration {
     CRegion      buttonsPopClip(const CBox& barBox);
 
     bool inputIsValid();
+    bool pointerOnBar();
+    bool focusWindow();
+    static WP<CHyprBar> barAtPointer();
     void onMouseButton(Event::SCallbackInfo& info, IPointer::SButtonEvent e);
+    bool onMiddleButton(Event::SCallbackInfo& info, IPointer::SButtonEvent e);
     void onTouchDown(Event::SCallbackInfo& info, ITouch::SDownEvent e);
     void onTouchUp(Event::SCallbackInfo& info, ITouch::SUpEvent e);
     void onMouseMove(Vector2D coords);
@@ -127,6 +133,7 @@ class CHyprBar : public IHyprWindowDecoration {
     bool                m_bTouchEv       = false;
     bool                m_bDragPending   = false;
     bool                m_bCancelledDown = false;
+    bool                m_bMiddleDown    = false;
     int                 m_touchId        = 0;
 
     // store hover state for buttons as a bitfield

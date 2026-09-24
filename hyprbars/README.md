@@ -21,6 +21,11 @@ plugin {
 
         # cmd to run on double click of the bar
         on_double_click = hyprctl dispatch fullscreen 1
+
+        # cmds to run on middle click of the bar and on scrolling over it
+        on_middle_click = hyprctl dispatch killactive
+        on_scroll_up = hyprctl dispatch fullscreen 1
+        on_scroll_down = hyprctl dispatch movetoworkspacesilent special
     }
 }
 ```
@@ -46,6 +51,9 @@ plugin {
 `buttons_on_hover` | bool | whether the buttons are only drawn while the cursor is over the bar | `false`
 `inactive_button_color` | col | buttons bg color when window isn't focused
 `on_double_click` | str | command to run on double click of the bar (not on a button)
+`on_middle_click` | str | command to run on middle click of the bar (not on a button). It runs when the button is released over the same bar, not with modifier keys held. Empty leaves the middle button working like the left one
+`on_scroll_up` | str | command to run on scrolling up over the bar, one step per scroll: after it runs, nothing more happens until the scrolling pauses, and the rest of that scroll reaches nothing, wherever the pointer has moved. Not with modifier keys held, so bindings such as Super + scroll keep working
+`on_scroll_down` | str | the same as `on_scroll_up`, for scrolling down. Vertical scrolling over the bar with no modifier keys held reaches neither the bar's window nor anything under it while either of the two is set
 
 ## Buttons Config
 
@@ -66,6 +74,7 @@ hl.config({
         hyprbars = {
             bar_height = 20,
             on_double_click = "hyprctl dispatch fullscreen 1",
+            on_middle_click = "hyprctl dispatch 'hl.dsp.window.close()'",
         },
     },
 })

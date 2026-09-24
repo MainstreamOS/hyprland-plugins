@@ -9,6 +9,7 @@
 #include <hyprland/src/desktop/view/LayerSurface.hpp>
 #include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
+#include <hyprland/src/managers/SessionLockManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
@@ -20,6 +21,8 @@
 #include <hyprland/src/protocols/LayerShell.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
+#include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
+#include <hyprland/src/plugins/PluginSystem.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/state/MonitorState.hpp>
 
@@ -27,8 +30,25 @@
 #include "BarPassElement.hpp"
 
 #include <climits>
+#include <cmath>
+#include <dlfcn.h>
+#include <linux/input-event-codes.h>
 
 using namespace Render::GL;
+
+class IOverview;
+
+// Scroll travel is counted in the 120ths of a notch a wheel reports. They are
+// whole numbers, so the pieces a high-resolution wheel splits a notch into add
+// up to exactly one notch, where adding them as fractions can fall just short.
+// A notch is 15 in the smooth units a touchpad reports in too, so a touchpad
+// takes a step after about a notch of travel.
+constexpr double WHEEL_NOTCH  = 120.0;
+constexpr double SMOOTH_NOTCH = 15.0;
+
+// Longer than a spinning wheel rests between notches, and short enough that a
+// deliberate second notch still takes a second step.
+constexpr uint32_t SCROLL_PAUSE_MS = 280;
 
 static CHyprColor configColor(Config::INTEGER color) {
     return CHyprColor{static_cast<uint64_t>(color)};
@@ -36,6 +56,49 @@ static CHyprColor configColor(Config::INTEGER color) {
 
 static bool anyHoverColor() {
     return std::ranges::any_of(g_pGlobalState->buttonHoverColors, [](const auto& c) { return c.has_value(); });
+}
+
+// Caps Lock and Num Lock are locks left on, not keys being held.
+static bool modifiersHeld() {
+    return (g_pInputManager->getModsFromAllKBs() & ~(HL_MODIFIER_CAPS | HL_MODIFIER_MOD2)) != 0;
+}
+
+// Scroll Overview draws over the windows without moving them, so a bar still
+// hit-tests where its window really is, underneath the overview. Its own
+// handlers skip input a bar has already canceled, and the bars hear input
+// first, so a gesture has to stand aside wherever an overview is showing.
+static bool overviewAtPointer() {
+    using PScrollOverviewAt = SP<IOverview> (*)(const Vector2D&);
+
+    if (!g_pPluginSystem)
+        return false;
+
+    for (const auto* plugin : g_pPluginSystem->getAllPlugins()) {
+        if (!plugin || !plugin->m_handle)
+            continue;
+
+        const auto SCROLLOVERVIEWAT = reinterpret_cast<PScrollOverviewAt>(dlsym(plugin->m_handle, "_Z16scrollOverviewAtRKN9Hyprutils4Math8Vector2DE"));
+
+        if (SCROLLOVERVIEWAT)
+            return !!SCROLLOVERVIEWAT(g_pInputManager->getMouseCoordsInternal());
+    }
+
+    return false;
+}
+
+// The window in sight under the pointer. Hyprland's own hit test also counts
+// the resize strip a floating window keeps past its edges, which cannot be
+// seen, so a window found only by its strip gives way to the one beneath it.
+static PHLWINDOW windowInSight(const Vector2D& pos) {
+    constexpr auto          FLAGS = Desktop::View::RESERVED_EXTENTS | Desktop::View::ALLOW_FLOATING;
+    Desktop::CViewHitTester hitTester{*Desktop::viewState()};
+
+    const auto              WINDOW = hitTester.windowAt(pos, FLAGS);
+
+    if (WINDOW && !WINDOW->getWindowBoxUnified(Desktop::View::RESERVED_EXTENTS).containsPoint(pos) && !WINDOW->hasPopupAt(pos))
+        return hitTester.windowAt(pos, FLAGS, WINDOW);
+
+    return WINDOW;
 }
 
 CHyprBar::CHyprBar(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow) {
@@ -97,6 +160,11 @@ bool CHyprBar::inputIsValid() {
     if (m_hidden)
         return false;
 
+    // The lock screen is not a layer surface, so the layer checks below never
+    // see it, and input on it must not reach the windows it hides.
+    if (g_pSessionLockManager->isSessionLocked())
+        return false;
+
     if (g_pSeatManager->m_seatGrab && !g_pSeatManager->m_seatGrab->accepts(m_pWindow->wlSurface()->resource()))
         return false;
 
@@ -132,7 +200,192 @@ bool CHyprBar::inputIsValid() {
     return true;
 }
 
+// Whether the pointer is on this bar where it is drawn and in sight, judged
+// the way a click on the bar is, with no popup of the window's own over that
+// spot. A click lets the focused window's bar answer from under another
+// window, but a gesture there belongs to the window on top, which would get
+// the scroll or middle click if the bar were not there.
+bool CHyprBar::pointerOnBar() {
+    if (m_hidden || !validMapped(m_pWindow) || !g_pGlobalState->config.enabled->value())
+        return false;
+
+    const auto MOUSE  = g_pInputManager->getMouseCoordsInternal();
+    const auto BOX    = assignedBoxGlobal();
+    const auto COORDS = MOUSE - BOX.pos();
+
+    if (!VECINRECT(COORDS, 0, 0, BOX.w, g_pGlobalState->config.barHeight->value() - 1))
+        return false;
+
+    const auto PWINDOW = m_pWindow.lock();
+
+    // A fullscreen window's bar is not drawn, yet it keeps its place above the
+    // window, which can be out on the monitor next door.
+    if (!PWINDOW->m_ruleApplicator->decorate().valueOrDefault() || Fullscreen::controller()->getFullscreenModes(PWINDOW).internal == Fullscreen::FSMODE_FULLSCREEN)
+        return false;
+
+    return inputIsValid() && windowInSight(MOUSE) == PWINDOW && !PWINDOW->hasPopupAt(MOUSE);
+}
+
+// Focus and raise the window the way a click on its bar does, so a command
+// that acts on the active window acts on this one. Hyprland can refuse the
+// focus or hand it to another window, and then no command may run, since it
+// would act on whatever window has the focus instead.
+bool CHyprBar::focusWindow() {
+    const auto PWINDOW = m_pWindow.lock();
+
+    if (Desktop::focusState()->window() != PWINDOW)
+        Desktop::focusState()->fullWindowFocus(PWINDOW, Desktop::FOCUS_REASON_CLICK);
+
+    if (Desktop::focusState()->window() != PWINDOW)
+        return false;
+
+    if (PWINDOW->m_isFloating)
+        Desktop::windowState()->raise(PWINDOW);
+
+    return true;
+}
+
+// The bar the pointer is on. Only one window is in sight under the pointer, so
+// at most one bar can be.
+WP<CHyprBar> CHyprBar::barAtPointer() {
+    for (const auto& b : g_pGlobalState->bars) {
+        if (b && b->pointerOnBar())
+            return b;
+    }
+
+    return {};
+}
+
+void CHyprBar::onMouseAxis(IPointer::SAxisEvent e, Event::SCallbackInfo& info) {
+    if (e.axis != WL_POINTER_AXIS_VERTICAL_SCROLL)
+        return;
+
+    const auto ON_SCROLL_UP   = g_pGlobalState->onScrollUp->value();
+    const auto ON_SCROLL_DOWN = g_pGlobalState->onScrollDown->value();
+
+    if (ON_SCROLL_UP.empty() && ON_SCROLL_DOWN.empty())
+        return;
+
+    auto& gesture = g_pGlobalState->scrollGesture;
+
+    // A touchpad reports its fingers lifting as a scroll of nothing, which
+    // ends the scroll as surely as a pause does.
+    const bool STOPPED = e.source != WL_POINTER_AXIS_SOURCE_WHEEL && e.delta == 0.0;
+    const bool PAUSED  = e.timeMs - gesture.lastAxisTimeMs > SCROLL_PAUSE_MS;
+
+    // Whether this event belongs to a scroll that has already moved a window.
+    // The lift that ends a scroll is still part of it, while the first event
+    // after a pause starts a new one.
+    const bool SPENT = gesture.stepped && (STOPPED || !PAUSED);
+
+    if (STOPPED || PAUSED) {
+        gesture.armed       = true;
+        gesture.stepped     = false;
+        gesture.accumulated = 0.0;
+    }
+
+    gesture.lastAxisTimeMs = e.timeMs;
+
+    // A scroll that goes elsewhere first, Super and the wheel switching
+    // workspaces among them, spends the step too: whatever bar the rest of it
+    // meets was not what the scroll was aimed at.
+    const bool FREE     = !info.cancelled && !modifiersHeld();
+    const auto bar      = FREE ? barAtPointer() : WP<CHyprBar>{};
+    const bool OVERVIEW = FREE && overviewAtPointer();
+
+    if (!bar || OVERVIEW) {
+        if (!STOPPED)
+            gesture.armed = false;
+
+        // A step often takes the bar out from under the pointer and leaves a
+        // page or another window there, which must not get the rest of the
+        // scroll that moved the window. Super and the wheel still switch
+        // workspaces, and Scroll Overview still hears it.
+        if (SPENT && FREE && !OVERVIEW)
+            info.cancelled = true;
+
+        return;
+    }
+
+    info.cancelled = true;
+
+    if (!gesture.armed || STOPPED)
+        return;
+
+    const double TRAVEL = e.source == WL_POINTER_AXIS_SOURCE_WHEEL ? e.deltaDiscrete : e.delta * (WHEEL_NOTCH / SMOOTH_NOTCH);
+
+    if (TRAVEL * gesture.accumulated < 0.0)
+        gesture.accumulated = 0.0;
+
+    gesture.accumulated += TRAVEL;
+
+    if (std::abs(gesture.accumulated) < WHEEL_NOTCH)
+        return;
+
+    const auto CMD = gesture.accumulated < 0.0 ? ON_SCROLL_UP : ON_SCROLL_DOWN;
+
+    gesture.accumulated = 0.0;
+
+    if (CMD.empty())
+        return;
+
+    gesture.armed   = false;
+    gesture.stepped = true;
+
+    if (bar->focusWindow())
+        Config::Supplementary::executor()->spawn(CMD);
+}
+
+// A middle click runs on_middle_click when the button comes back up over the
+// bar it went down on, so sliding off the bar first calls it off. A press on
+// one of the bar's buttons with no overview showing there is handed back to
+// the usual handling by returning false; any other middle press is kept from
+// starting a drag or counting toward a double click.
+bool CHyprBar::onMiddleButton(Event::SCallbackInfo& info, IPointer::SButtonEvent e) {
+    if (e.state != WL_POINTER_BUTTON_STATE_PRESSED) {
+        if (!m_bMiddleDown)
+            return false;
+
+        m_bMiddleDown  = false;
+        info.cancelled = true;
+
+        const auto ON_MIDDLE_CLICK = g_pGlobalState->onMiddleClick->value();
+
+        if (!ON_MIDDLE_CLICK.empty() && pointerOnBar() && focusWindow())
+            Config::Supplementary::executor()->spawn(ON_MIDDLE_CLICK);
+
+        return true;
+    }
+
+    if (g_pGlobalState->onMiddleClick->value().empty())
+        return false;
+
+    if (!pointerOnBar())
+        return true;
+
+    // A press under an overview belongs to the overview, even over a button:
+    // the overview hears it only if no bar has taken it first.
+    if (overviewAtPointer())
+        return true;
+
+    if (hoveredButtons() != 0)
+        return false;
+
+    // A press with modifiers held is left to Hyprland's own mouse binds.
+    if (modifiersHeld())
+        return true;
+
+    info.cancelled = true;
+    m_bMiddleDown  = true;
+    focusWindow();
+
+    return true;
+}
+
 void CHyprBar::onMouseButton(Event::SCallbackInfo& info, IPointer::SButtonEvent e) {
+    if (e.button == BTN_MIDDLE && onMiddleButton(info, e))
+        return;
+
     if (!inputIsValid())
         return;
 

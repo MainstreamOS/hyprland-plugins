@@ -261,6 +261,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_pGlobalState->config.buttonsPopIn        = makeShared<Config::Values::CBoolValue>(
         "plugin:hyprbars:buttons_pop_in", "Whether buttons shown on hover come and go the way windows open and close, not only by fading", true);
     g_pGlobalState->config.onDoubleClick       = makeShared<Config::Values::CStringValue>("plugin:hyprbars:on_double_click", "Action to execute on double click of the bar", "");
+    g_pGlobalState->onScrollUp                 = makeShared<Config::Values::CStringValue>("plugin:hyprbars:on_scroll_up", "Action to execute on scrolling up over the bar", "");
+    g_pGlobalState->onScrollDown               = makeShared<Config::Values::CStringValue>("plugin:hyprbars:on_scroll_down", "Action to execute on scrolling down over the bar", "");
+    g_pGlobalState->onMiddleClick              = makeShared<Config::Values::CStringValue>("plugin:hyprbars:on_middle_click", "Action to execute on middle click of the bar", "");
 
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.barColor);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.textColor);
@@ -282,6 +285,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.buttonsOnHover);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.buttonsPopIn);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.onDoubleClick);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->onScrollUp);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->onScrollDown);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->onMiddleClick);
+
+    static auto P6 = Event::bus()->m_events.input.mouse.axis.listen([&](IPointer::SAxisEvent e, Event::SCallbackInfo& info) { CHyprBar::onMouseAxis(e, info); });
 
     if (Config::mgr()->type() == Config::CONFIG_LEGACY)
         HyprlandAPI::addConfigKeyword(PHANDLE, "plugin:hyprbars:hyprbars-button", onNewButton, Hyprlang::SHandlerOptions{});

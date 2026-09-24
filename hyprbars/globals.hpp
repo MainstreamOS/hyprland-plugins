@@ -52,6 +52,24 @@ struct SGlobalState {
     // button index. It lives out here, after everything else, because Scroll
     // Overview reads this state through its own copy of the layout.
     std::vector<std::optional<CHyprColor>> buttonHoverColors;
+
+    // The title bar gestures, kept out of the config struct and after
+    // everything else for the same reason.
+    SP<Config::Values::CStringValue> onScrollUp, onScrollDown, onMiddleClick;
+
+    // One scroll moves a window a single step. After a step nothing more
+    // happens until vertical scrolling pauses, wherever the pointer has gone
+    // by then, so a spinning wheel cannot skip steps and what is left of the
+    // scroll reaches neither the bar nor the window that turns up under the
+    // pointer next. A scroll that started somewhere else is disarmed too, but
+    // it has moved nothing, so the rest of it still reaches what it is over;
+    // `stepped` tells the two apart.
+    struct {
+        uint32_t lastAxisTimeMs = 0;
+        double   accumulated    = 0.0;
+        bool     armed          = true;
+        bool     stepped        = false;
+    } scrollGesture;
 };
 
 inline UP<SGlobalState> g_pGlobalState;
