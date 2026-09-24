@@ -65,7 +65,6 @@ class CHyprBar : public IHyprWindowDecoration {
     bool                       m_bWindowSizeChanged = false;
     bool                       m_hidden             = false;
     bool                       m_bTitleColorChanged = false;
-    bool                       m_bButtonHovered     = false;
     bool                       m_bBarHovered        = false;
     bool                       m_bLastEnabledState  = false;
     bool                       m_bWindowHasFocus    = false;
@@ -76,6 +75,16 @@ class CHyprBar : public IHyprWindowDecoration {
 
     PHLANIMVAR<CHyprColor>     m_cRealBarColor;
     PHLANIMVAR<float>          m_fButtonsAlpha;
+    PHLANIMVAR<float>          m_fButtonsPop;
+
+    // How the buttons move while they come and go, taken from the window
+    // animation style so the two match.
+    enum eButtonsPopStyle : uint8_t {
+        BUTTONS_POP_POPIN = 0,
+        BUTTONS_POP_SLIDE,
+    };
+    eButtonsPopStyle           m_eButtonsPopStyle    = BUTTONS_POP_POPIN;
+    float                      m_fButtonsPopMinScale = 0.8F;
 
     Vector2D                   cursorRelativeToBar();
 
@@ -84,6 +93,11 @@ class CHyprBar : public IHyprWindowDecoration {
     void renderBarButtons(CBox* barBox, const float scale, const float a);
     void renderBarButtonsText(CBox* barBox, const float scale, const float a);
     void damageOnButtonHover();
+    unsigned int hoveredButtons();
+    bool         buttonsPopping();
+    void         setButtonsPopStyle(std::string style);
+    CBox         buttonsPopBox(CBox box, const float distance, const bool buttonsRight);
+    CRegion      buttonsPopClip(const CBox& barBox);
 
     bool inputIsValid();
     void onMouseButton(Event::SCallbackInfo& info, IPointer::SButtonEvent e);
@@ -117,6 +131,7 @@ class CHyprBar : public IHyprWindowDecoration {
 
     // store hover state for buttons as a bitfield
     unsigned int m_iButtonHoverState = 0;
+    unsigned int m_iButtonHoverDamageState = 0;
 
     // for dynamic updates
     int    m_iLastHeight = 0;

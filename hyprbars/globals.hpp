@@ -44,9 +44,14 @@ struct SGlobalState {
         SP<Config::Values::CFontWeightValue> barTextWeight;
         SP<Config::Values::CIntValue>        barPadding;
         SP<Config::Values::CIntValue>        barButtonPadding;
-        SP<Config::Values::CBoolValue>       barBlur, barTitleEnabled, barPartOfWindow, barPrecedenceOverBorder, enabled, iconOnHover, buttonsOnHover;
+        SP<Config::Values::CBoolValue>       barBlur, barTitleEnabled, barPartOfWindow, barPrecedenceOverBorder, enabled, iconOnHover, buttonsOnHover, buttonsPopIn;
         SP<Config::Values::CStringValue>     barTextFont, barTextAlign, barButtonsAlignment, onDoubleClick;
     } config;
+
+    // The color each button's circle takes while the cursor is on it, by
+    // button index. It lives out here, after everything else, because Scroll
+    // Overview reads this state through its own copy of the layout.
+    std::vector<std::optional<CHyprColor>> buttonHoverColors;
 };
 
 inline UP<SGlobalState> g_pGlobalState;

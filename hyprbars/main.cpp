@@ -51,6 +51,7 @@ extern "C" APICALL const size_t g_hyprbarsButtonSize = sizeof(SHyprButton);
 static void onPreConfigReload() {
     g_pGlobalState->buttons.clear();
     g_pGlobalState->buttonIconScales.clear();
+    g_pGlobalState->buttonHoverColors.clear();
 }
 
 static void onConfigReloaded() {
@@ -113,6 +114,7 @@ Hyprlang::CParseResult onNewButton(const char* K, const char* V) {
     }
 
     g_pGlobalState->buttons.push_back(SHyprButton{vars[3], userfg, *fgcolor, *bgcolor, size, vars[2]});
+    g_pGlobalState->buttonHoverColors.emplace_back(std::nullopt);
 
     for (auto& b : g_pGlobalState->bars) {
         b->m_bButtonsDirty = true;
@@ -187,7 +189,25 @@ int newLuaButton(lua_State* L) {
         button.cmd = lua_tostring(L, -1);
     }
 
+    std::optional<CHyprColor> hoverColor;
+
+    {
+        Hyprutils::Utils::CScopeGuard x([L] { lua_pop(L, 1); });
+
+        lua_getfield(L, 1, "hover_color");
+
+        if (!lua_isnil(L, -1)) {
+            Config::Lua::CLuaConfigColor parser(0);
+            auto                         err = parser.parse(L);
+            if (err.errorCode != Config::Lua::PARSE_ERROR_OK)
+                return Config::Lua::Bindings::Internal::configError(L, "add_button: failed to parse hover_color");
+
+            hoverColor = parser.parsed();
+        }
+    }
+
     g_pGlobalState->buttons.push_back(std::move(button));
+    g_pGlobalState->buttonHoverColors.emplace_back(hoverColor);
 
     for (auto& b : g_pGlobalState->bars) {
         b->m_bButtonsDirty = true;
@@ -238,6 +258,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_pGlobalState->config.iconOnHover         = makeShared<Config::Values::CBoolValue>("plugin:hyprbars:icon_on_hover", "Whether to use an icon on hover of the buttons", false);
     g_pGlobalState->config.buttonsOnHover      = makeShared<Config::Values::CBoolValue>(
         "plugin:hyprbars:buttons_on_hover", "Whether the buttons are only drawn while the cursor is over the bar", false);
+    g_pGlobalState->config.buttonsPopIn        = makeShared<Config::Values::CBoolValue>(
+        "plugin:hyprbars:buttons_pop_in", "Whether buttons shown on hover come and go the way windows open and close, not only by fading", true);
     g_pGlobalState->config.onDoubleClick       = makeShared<Config::Values::CStringValue>("plugin:hyprbars:on_double_click", "Action to execute on double click of the bar", "");
 
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.barColor);
@@ -258,6 +280,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.enabled);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.iconOnHover);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.buttonsOnHover);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.buttonsPopIn);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.onDoubleClick);
 
     if (Config::mgr()->type() == Config::CONFIG_LEGACY)

@@ -34,6 +34,10 @@ static CHyprColor configColor(Config::INTEGER color) {
     return CHyprColor{static_cast<uint64_t>(color)};
 }
 
+static bool anyHoverColor() {
+    return std::ranges::any_of(g_pGlobalState->buttonHoverColors, [](const auto& c) { return c.has_value(); });
+}
+
 CHyprBar::CHyprBar(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow) {
     m_pWindow = pWindow;
 
@@ -55,6 +59,9 @@ CHyprBar::CHyprBar(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow) {
 
     Animation::mgr()->createAnimation(0.F, m_fButtonsAlpha, Config::animationTree()->getAnimationPropertyConfig("fadeIn"), pWindow, AVARDAMAGE_NONE);
     m_fButtonsAlpha->setUpdateCallback([&](auto) { damageEntire(); });
+
+    Animation::mgr()->createAnimation(0.F, m_fButtonsPop, Config::animationTree()->getAnimationPropertyConfig("windowsIn"), pWindow, AVARDAMAGE_NONE);
+    m_fButtonsPop->setUpdateCallback([&](auto) { damageEntire(); });
 }
 
 CHyprBar::~CHyprBar() {
@@ -153,8 +160,8 @@ void CHyprBar::onTouchUp(Event::SCallbackInfo& info, ITouch::SUpEvent e) {
 }
 
 void CHyprBar::onMouseMove(Vector2D coords) {
-    // ensure proper redraws of button icons on hover when using hardware cursors
-    if (g_pGlobalState->config.iconOnHover->value())
+    // ensure proper redraws of button icons and hover colors on hover when using hardware cursors
+    if (g_pGlobalState->config.iconOnHover->value() || anyHoverColor())
         damageOnButtonHover();
 
     // buttons_on_hover: the buttons only exist while the cursor is over the bar,
@@ -168,6 +175,14 @@ void CHyprBar::onMouseMove(Vector2D coords) {
             // They fade the way windows do, in and out at the user's own pace.
             m_fButtonsAlpha->setConfig(Config::animationTree()->getAnimationPropertyConfig(HOVERED ? "fadeIn" : "fadeOut"));
             *m_fButtonsAlpha = HOVERED ? 1.F : 0.F;
+            // With buttons_pop_in they also move the way windows open and close,
+            // on that curve and in that style.
+            if (g_pGlobalState->config.buttonsPopIn->value()) {
+                m_fButtonsPop->setConfig(Config::animationTree()->getAnimationPropertyConfig(HOVERED ? "windowsIn" : "windowsOut"));
+                setButtonsPopStyle(m_fButtonsPop->getStyle());
+                *m_fButtonsPop = HOVERED ? 1.F : 0.F;
+            } else
+                m_fButtonsPop->setValueAndWarp(HOVERED ? 1.F : 0.F);
             damageEntire();
         }
     }
@@ -375,6 +390,9 @@ void CHyprBar::renderBarButtons(CBox* barBox, const float scale, const float a) 
     const bool BUTTONSRIGHT    = ALIGNBUTTONS != "left";
     const auto visibleCount    = getVisibleButtonCount(BARBUTTONPADDING, BARPADDING, Vector2D{barBox->w, barBox->h}, scale);
     const bool INVALIDATEICONS = m_bButtonsDirty || m_bWindowSizeChanged;
+    const auto HOVERED         = anyHoverColor() ? hoveredButtons() : 0U;
+    const bool POPPING         = buttonsPopping();
+    const auto CLIP            = POPPING && m_eButtonsPopStyle == BUTTONS_POP_SLIDE ? std::optional<CRegion>{buttonsPopClip(*barBox)} : std::nullopt;
 
     int        offset = BARPADDING * scale;
     for (size_t i = 0; i < visibleCount; ++i) {
@@ -390,13 +408,22 @@ void CHyprBar::renderBarButtons(CBox* barBox, const float scale, const float a) 
                 button.iconTex = nullptr;
         }
 
+        // The hover color answers the cursor, so it outranks the inactive color.
+        if (i < 32 && (HOVERED & (1U << i)) && i < g_pGlobalState->buttonHoverColors.size() && g_pGlobalState->buttonHoverColors[i])
+            color = *g_pGlobalState->buttonHoverColors[i];
+
         color.a *= a * BUTTONSALPHA;
 
         CBox buttonBox = {barBox->x + (BUTTONSRIGHT ? barBox->w - offset - scaledButtonSize : offset), barBox->y + (barBox->h - scaledButtonSize) / 2.0, scaledButtonSize,
                           scaledButtonSize};
+        if (POPPING)
+            buttonBox = buttonsPopBox(buttonBox, scaledButtonSize, BUTTONSRIGHT);
         buttonBox.round();
 
-        g_pHyprOpenGL->renderRect(buttonBox, color, {.round = static_cast<int>(std::round(scaledButtonSize / 2.0)), .roundingPower = 2.F});
+        if (buttonBox.w >= 1 && buttonBox.h >= 1)
+            g_pHyprOpenGL->renderRect(
+                buttonBox, color,
+                {.damage = CLIP ? &*CLIP : nullptr, .round = static_cast<int>(std::round((POPPING ? buttonBox.w : scaledButtonSize) / 2.0)), .roundingPower = 2.F});
 
         offset += scaledButtonsPad + scaledButtonSize;
     }
@@ -416,6 +443,8 @@ void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float
     const bool BUTTONSRIGHT = ALIGNBUTTONS != "left";
     const auto visibleCount = getVisibleButtonCount(BARBUTTONPADDING, BARPADDING, Vector2D{barBox->w, barBox->h}, scale);
     const auto COORDS       = cursorRelativeToBar();
+    const bool POPPING      = buttonsPopping();
+    const auto CLIP         = POPPING && m_eButtonsPopStyle == BUTTONS_POP_SLIDE ? std::optional<CRegion>{buttonsPopClip(*barBox)} : std::nullopt;
 
     int        offset        = BARPADDING * scale;
     float      noScaleOffset = BARPADDING;
@@ -451,9 +480,11 @@ void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float
         const auto iconX = barBox->x + (BUTTONSRIGHT ? barBox->width - offset - scaledButtonSize / 2.0 : offset + scaledButtonSize / 2.0) - button.iconTex->m_size.x / 2.0;
         const auto iconY = barBox->y + barBox->height / 2.0 - button.iconTex->m_size.y / 2.0;
         CBox       pos   = {iconX, iconY, button.iconTex->m_size.x, button.iconTex->m_size.y};
+        if (POPPING)
+            pos = buttonsPopBox(pos, scaledButtonSize, BUTTONSRIGHT);
 
-        if (!ICONONHOVER || (ICONONHOVER && m_iButtonHoverState > 0))
-            g_pHyprOpenGL->renderTexture(button.iconTex, pos, {.a = a * BUTTONSALPHA});
+        if ((!ICONONHOVER || (ICONONHOVER && m_iButtonHoverState > 0)) && pos.w > 0 && pos.h > 0)
+            g_pHyprOpenGL->renderTexture(button.iconTex, pos, {.damage = CLIP ? &*CLIP : nullptr, .a = a * BUTTONSALPHA});
         offset += scaledButtonsPad + scaledButtonSize;
 
         bool currentBit = (m_iButtonHoverState & (1 << i)) != 0;
@@ -706,28 +737,79 @@ void CHyprBar::updateRules() {
         m_bTitleColorChanged = true;
 }
 
-void CHyprBar::damageOnButtonHover() {
-    const auto BARPADDING       = g_pGlobalState->config.barPadding->value();
-    const auto BARBUTTONPADDING = g_pGlobalState->config.barButtonPadding->value();
-    const auto HEIGHT           = g_pGlobalState->config.barHeight->value();
-    const auto ALIGNBUTTONS     = g_pGlobalState->config.barButtonsAlignment->value();
-    const bool BUTTONSRIGHT     = ALIGNBUTTONS != "left";
+unsigned int CHyprBar::hoveredButtons() {
+    const auto   BARPADDING       = g_pGlobalState->config.barPadding->value();
+    const auto   BARBUTTONPADDING = g_pGlobalState->config.barButtonPadding->value();
+    const auto   HEIGHT           = g_pGlobalState->config.barHeight->value();
+    const auto   ALIGNBUTTONS     = g_pGlobalState->config.barButtonsAlignment->value();
+    const bool   BUTTONSRIGHT     = ALIGNBUTTONS != "left";
 
-    float      offset = BARPADDING;
+    const auto   COORDS = cursorRelativeToBar();
+    const auto   BARBUF = Vector2D{static_cast<double>(static_cast<int>(assignedBoxGlobal().w)), static_cast<double>(HEIGHT)};
 
-    const auto COORDS = cursorRelativeToBar();
+    float        offset  = BARPADDING;
+    unsigned int hovered = 0;
 
-    for (auto& b : g_pGlobalState->buttons) {
-        const auto BARBUF     = Vector2D{(int)assignedBoxGlobal().w, HEIGHT};
-        Vector2D   currentPos = Vector2D{(BUTTONSRIGHT ? BARBUF.x - BARBUTTONPADDING - b.size - offset : offset), (BARBUF.y - b.size) / 2.0}.floor();
+    for (size_t i = 0; i < g_pGlobalState->buttons.size() && i < 32; ++i) {
+        const auto& b          = g_pGlobalState->buttons[i];
+        const auto  currentPos = Vector2D{(BUTTONSRIGHT ? BARBUF.x - BARBUTTONPADDING - b.size - offset : offset), (BARBUF.y - b.size) / 2.0}.floor();
 
-        bool       hover = VECINRECT(COORDS, currentPos.x, currentPos.y, currentPos.x + b.size + BARBUTTONPADDING, currentPos.y + b.size);
-
-        if (hover != m_bButtonHovered) {
-            m_bButtonHovered = hover;
-            damageEntire();
-        }
+        if (VECINRECT(COORDS, currentPos.x, currentPos.y, currentPos.x + b.size + BARBUTTONPADDING, currentPos.y + b.size))
+            hovered |= 1U << i;
 
         offset += BARBUTTONPADDING + b.size;
     }
+
+    return hovered;
+}
+
+void CHyprBar::damageOnButtonHover() {
+    const auto HOVERED = hoveredButtons();
+
+    if (HOVERED != m_iButtonHoverDamageState) {
+        m_iButtonHoverDamageState = HOVERED;
+        damageEntire();
+    }
+}
+
+bool CHyprBar::buttonsPopping() {
+    return g_pGlobalState->config.buttonsOnHover->value() && g_pGlobalState->config.buttonsPopIn->value() && m_fButtonsPop->value() != 1.F;
+}
+
+void CHyprBar::setButtonsPopStyle(std::string style) {
+    std::ranges::transform(style, style.begin(), [](unsigned char c) { return std::tolower(c); });
+
+    // Read the way Hyprland reads a window's style, so "popin 60%" means the
+    // same here. Anything that is not a slide pops in, gnomed included, since
+    // that is where windows fall back too; with no size named it starts at 80%.
+    m_eButtonsPopStyle    = style.starts_with("slide") ? BUTTONS_POP_SLIDE : BUTTONS_POP_POPIN;
+    m_fButtonsPopMinScale = 0.8F;
+
+    if (m_eButtonsPopStyle != BUTTONS_POP_POPIN || style.find('%') == std::string::npos)
+        return;
+
+    try {
+        m_fButtonsPopMinScale = std::clamp(std::stoi(style.substr(style.find_last_of(' ') + 1)) / 100.F, 0.F, 1.F);
+    } catch (...) { ; }
+}
+
+CBox CHyprBar::buttonsPopBox(CBox box, const float distance, const bool buttonsRight) {
+    const float PROGRESS = m_fButtonsPop->value();
+
+    // In from the edge the buttons are aligned to, by about a button's width:
+    // enough to read as movement in a bar this short.
+    if (m_eButtonsPopStyle == BUTTONS_POP_SLIDE)
+        return box.translate({(buttonsRight ? 1.F : -1.F) * (1.F - PROGRESS) * distance, 0.F});
+
+    // An overshooting curve can dip below zero on the way in.
+    return box.scaleFromCenter(std::max(0.F, m_fButtonsPopMinScale + (1.F - m_fButtonsPopMinScale) * PROGRESS));
+}
+
+CRegion CHyprBar::buttonsPopClip(const CBox& barBox) {
+    // A button that starts past the bar's edge would leave pixels where the
+    // bar never damages again, so nothing may be drawn outside the bar.
+    CRegion clip{barBox};
+    g_pHyprRenderer->m_renderData.renderModif.applyToRegion(clip);
+    clip.intersect(g_pHyprRenderer->m_renderData.damage);
+    return clip;
 }
