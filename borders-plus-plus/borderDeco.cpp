@@ -62,7 +62,7 @@ std::string CBordersPlusPlus::getDisplayName() {
     return "Borders++";
 }
 
-void CBordersPlusPlus::draw(PHLMONITOR pMonitor, const float& a) {
+void CBordersPlusPlus::draw(Render::CRenderContext& ctx, PHLMONITOR pMonitor, float const& a, const Render::SWindowRenderPresentation& presentation) {
     if (!validMapped(m_pWindow))
         return;
 
@@ -74,10 +74,10 @@ void CBordersPlusPlus::draw(PHLMONITOR pMonitor, const float& a) {
     CBorderPPPassElement::SBorderPPData data;
     data.deco = this;
 
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPPPassElement>(data));
+    g_pHyprRenderer->addPassElement(ctx, makeUnique<CBorderPPPassElement>(data));
 }
 
-void CBordersPlusPlus::drawPass(PHLMONITOR pMonitor, const float& a) {
+void CBordersPlusPlus::drawPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, const float& a) {
     const auto  PWINDOW = m_pWindow.lock();
 
     static auto PROUNDING   = CConfigValue<Config::INTEGER>("decoration:rounding");
@@ -131,14 +131,14 @@ void CBordersPlusPlus::drawPass(PHLMONITOR pMonitor, const float& a) {
         if (fullBox.width < 1 || fullBox.height < 1)
             break;
 
-        g_pHyprOpenGL->scissor(nullptr);
+        g_pHyprOpenGL->scissor(ctx, nullptr);
 
-        g_pHyprOpenGL->renderBorder(fullBox, CHyprColor{static_cast<uint64_t>(vars.borderColors[i]->value())},
-                                    {.round         = NATURALROUND ? sc<int>(ORIGINALROUND) : sc<int>(rounding),
-                                     .roundingPower = ROUNDINGPOWER,
-                                     .borderSize    = THISBORDERSIZE,
-                                     .a             = a,
-                                     .outerRound    = NATURALROUND ? sc<int>(ORIGINALROUND) : -1});
+        g_pHyprOpenGL->renderBorder(ctx, fullBox, Config::CGradientValueData(CHyprColor{static_cast<uint64_t>(vars.borderColors[i]->value())}),
+                                    CHyprOpenGLImpl::SBorderRenderData{.round         = NATURALROUND ? sc<int>(ORIGINALROUND) : sc<int>(rounding),
+                                                                       .roundingPower = ROUNDINGPOWER,
+                                                                       .borderSize    = THISBORDERSIZE,
+                                                                       .a             = a,
+                                                                       .outerRound    = NATURALROUND ? sc<int>(ORIGINALROUND) : -1});
     }
 
     m_seExtents = {{fullThickness, fullThickness}, {fullThickness, fullThickness}};

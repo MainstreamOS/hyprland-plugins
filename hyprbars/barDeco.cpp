@@ -630,7 +630,7 @@ size_t CHyprBar::getVisibleButtonCount(Config::INTEGER barButtonPadding, Config:
     return count;
 }
 
-void CHyprBar::renderBarButtons(CBox* barBox, const float scale, const float a) {
+void CHyprBar::renderBarButtons(Render::CRenderContext& ctx, CBox* barBox, const float scale, const float a) {
     const float BUTTONSALPHA = g_pGlobalState->config.buttonsOnHover->value() ? m_fButtonsAlpha->value() : 1.F;
     if (BUTTONSALPHA <= 0.F)
         return;
@@ -675,14 +675,14 @@ void CHyprBar::renderBarButtons(CBox* barBox, const float scale, const float a) 
 
         if (buttonBox.w >= 1 && buttonBox.h >= 1)
             g_pHyprOpenGL->renderRect(
-                buttonBox, color,
-                {.damage = CLIP ? &*CLIP : nullptr, .round = static_cast<int>(std::round((POPPING ? buttonBox.w : scaledButtonSize) / 2.0)), .roundingPower = 2.F});
+                ctx, buttonBox, color,
+                CHyprOpenGLImpl::SRectRenderData{.damage = CLIP ? &*CLIP : nullptr, .round = static_cast<int>(std::round((POPPING ? buttonBox.w : scaledButtonSize) / 2.0)), .roundingPower = 2.F});
 
         offset += scaledButtonsPad + scaledButtonSize;
     }
 }
 
-void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float a) {
+void CHyprBar::renderBarButtonsText(Render::CRenderContext& ctx, CBox* barBox, const float scale, const float a) {
     const float BUTTONSALPHA = g_pGlobalState->config.buttonsOnHover->value() ? m_fButtonsAlpha->value() : 1.F;
     if (BUTTONSALPHA <= 0.F)
         return;
@@ -717,14 +717,15 @@ void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float
         bool       hovering   = VECINRECT(COORDS, currentPos.x, currentPos.y, currentPos.x + button.size + BARBUTTONPADDING, currentPos.y + button.size);
         noScaleOffset += BARBUTTONPADDING + button.size;
 
-        const bool NEEDICON = !button.icon.empty() && (!button.iconTex || button.iconTex->m_texID == 0 || !iconScale.has_value() ||
-                                                      std::abs(iconScale.value_or(0.F) - scale) > 1e-6);
+        const bool NEEDICON = !button.icon.empty() &&
+            (!button.iconTex || button.iconTex->m_texID == 0 || !button.m_fIconScale.has_value() || std::abs(button.m_fIconScale.value_or(0.F) - scale) > 1e-6);
         if (NEEDICON) {
             // render icon
             auto fgcol = button.userfg ? button.fgcol : (button.bgcol.r + button.bgcol.g + button.bgcol.b < 1) ? CHyprColor(0xFFFFFFFF) : CHyprColor(0xFF000000);
 
-            button.iconTex   = g_pHyprRenderer->renderText(button.icon, fgcol, std::round(button.size * 0.62 * scale), false, g_pGlobalState->config.barTextFont->value(), scaledButtonSize);
-            iconScale        = scale;
+            button.iconTex =
+                g_pHyprRenderer->renderText(button.icon, fgcol, std::round(button.size * 0.62 * scale), false, g_pGlobalState->config.barTextFont->value(), scaledButtonSize);
+            button.m_fIconScale = scale;
         }
 
         if (!button.iconTex || button.iconTex->m_texID == 0)
@@ -735,9 +736,10 @@ void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float
         CBox       pos   = {iconX, iconY, button.iconTex->m_size.x, button.iconTex->m_size.y};
         if (POPPING)
             pos = buttonsPopBox(pos, scaledButtonSize, BUTTONSRIGHT);
+        pos.round(); // snap to whole pixels, otherwise the icon is sampled at a half-pixel offset and blurs
 
         if ((!ICONONHOVER || (ICONONHOVER && m_iButtonHoverState > 0)) && pos.w > 0 && pos.h > 0)
-            g_pHyprOpenGL->renderTexture(button.iconTex, pos, {.damage = CLIP ? &*CLIP : nullptr, .a = a * BUTTONSALPHA});
+            g_pHyprOpenGL->renderTexture(ctx, button.iconTex, pos, CHyprOpenGLImpl::STextureRenderData{.damage = CLIP ? &*CLIP : nullptr, .a = a * BUTTONSALPHA});
         offset += scaledButtonsPad + scaledButtonSize;
 
         bool currentBit = (m_iButtonHoverState & (1 << i)) != 0;
@@ -749,7 +751,7 @@ void CHyprBar::renderBarButtonsText(CBox* barBox, const float scale, const float
     }
 }
 
-void CHyprBar::draw(PHLMONITOR pMonitor, const float& a) {
+void CHyprBar::draw(Render::CRenderContext& ctx, PHLMONITOR monitor, const float& a, const Render::SWindowRenderPresentation& presentation) {
     const auto ENABLED = g_pGlobalState->config.enabled->value();
 
     if (m_bLastEnabledState != ENABLED) {
@@ -766,10 +768,10 @@ void CHyprBar::draw(PHLMONITOR pMonitor, const float& a) {
         return;
 
     auto data = CBarPassElement::SBarData{this, a};
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CBarPassElement>(data));
+    Render::IHyprRenderer::addPassElement(ctx, makeUnique<CBarPassElement>(data));
 }
 
-void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
+void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, const float& a) {
     const auto  PWINDOW = m_pWindow.lock();
 
     static auto PENABLEBLURGLOBAL = CConfigValue<Config::BOOL>("decoration:blur:enabled");
@@ -825,7 +827,7 @@ void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
     if (titleBarBox.w < 1 || titleBarBox.h < 1)
         return;
 
-    g_pHyprOpenGL->scissor(titleBarBox);
+    g_pHyprOpenGL->scissor(ctx, titleBarBox);
 
     if (ROUNDING) {
         // the +1 is a shit garbage temp fix until renderRect supports an alpha matte
@@ -849,7 +851,8 @@ void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
         windowBox.translate(WORKSPACEOFFSET).scale(pMonitor->m_scale).round();
-        g_pHyprOpenGL->renderRect(windowBox, CHyprColor(0, 0, 0, 0), {.round = scaledRounding, .roundingPower = m_pWindow->roundingPower()});
+        g_pHyprOpenGL->renderRect(ctx, windowBox, CHyprColor(0, 0, 0, 0),
+                                  CHyprOpenGLImpl::SRectRenderData{.round = sc<int>(scaledRounding), .roundingPower = m_pWindow->presentation().roundingPower()});
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
         glStencilFunc(GL_NOTEQUAL, 1, -1);
@@ -857,15 +860,19 @@ void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
     }
 
     if (SHOULDBLUR)
-        g_pHyprOpenGL->renderRect(titleBarBox, color, {.round = scaledRounding, .roundingPower = m_pWindow->roundingPower(), .blur = true, .blurA = a});
+        g_pHyprOpenGL->renderRect(
+            ctx, titleBarBox, color,
+            CHyprOpenGLImpl::SRectRenderData{.round = sc<int>(scaledRounding), .roundingPower = m_pWindow->presentation().roundingPower(), .blur = true, .blurA = a});
     else
-        g_pHyprOpenGL->renderRect(titleBarBox, color, {.round = scaledRounding, .roundingPower = m_pWindow->roundingPower()});
+        g_pHyprOpenGL->renderRect(ctx, titleBarBox, color,
+                                  CHyprOpenGLImpl::SRectRenderData{.round = sc<int>(scaledRounding), .roundingPower = m_pWindow->presentation().roundingPower()});
 
     // render title
-    const int SCALEDTEXTSIZE = std::round(g_pGlobalState->config.barTextSize->value() * pMonitor->m_scale);
-    if (ENABLETITLE && (m_szLastTitle != PWINDOW->m_title || m_bWindowSizeChanged || !m_pTextTex || m_pTextTex->m_texID == 0 || m_bTitleColorChanged ||
-                        m_iLastScaledTextSize != SCALEDTEXTSIZE)) {
-        m_szLastTitle = PWINDOW->m_title;
+    const int  SCALEDTEXTSIZE = std::round(g_pGlobalState->config.barTextSize->value() * pMonitor->m_scale);
+    const auto TITLE          = m_forcedTitle.value_or(PWINDOW->metadata().title());
+    if (ENABLETITLE &&
+        (m_szLastTitle != TITLE || m_bWindowSizeChanged || !m_pTextTex || m_pTextTex->m_texID == 0 || m_bTitleColorChanged || m_iLastScaledTextSize != SCALEDTEXTSIZE)) {
+        m_szLastTitle = TITLE;
         renderBarTitle(BARBUF, pMonitor->m_scale);
         m_iLastScaledTextSize = SCALEDTEXTSIZE;
     }
@@ -898,15 +905,15 @@ void CHyprBar::renderPass(PHLMONITOR pMonitor, const float& a) {
         const auto yOffset           = std::round((BARBUF.y - m_pTextTex->m_size.y) / 2.0);
         CBox       titleBox          = {textBox.x + xOffset, textBox.y + yOffset, m_pTextTex->m_size.x, m_pTextTex->m_size.y};
 
-        g_pHyprOpenGL->renderTexture(m_pTextTex, titleBox, {.a = a});
+        g_pHyprOpenGL->renderTexture(ctx, m_pTextTex, titleBox, {.a = a});
     }
 
-    renderBarButtons(&textBox, pMonitor->m_scale, a);
+    renderBarButtons(ctx, &textBox, pMonitor->m_scale, a);
     m_bButtonsDirty = false;
 
-    g_pHyprOpenGL->scissor(nullptr);
+    g_pHyprOpenGL->scissor(ctx, nullptr);
 
-    renderBarButtonsText(&textBox, pMonitor->m_scale, a);
+    renderBarButtonsText(ctx, &textBox, pMonitor->m_scale, a);
 
     m_bWindowSizeChanged = false;
     m_bTitleColorChanged = false;
@@ -966,6 +973,11 @@ CBox CHyprBar::assignedBoxGlobal() {
 
 PHLWINDOW CHyprBar::getOwner() {
     return m_pWindow.lock();
+}
+
+void CHyprBar::setTitle(std::optional<std::string> title) {
+    m_forcedTitle = std::move(title);
+    damageEntire();
 }
 
 void CHyprBar::updateRules() {
