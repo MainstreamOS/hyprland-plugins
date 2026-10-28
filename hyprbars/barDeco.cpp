@@ -5,7 +5,9 @@
 #include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/state/LayerState.hpp>
 #include <hyprland/src/desktop/state/ViewHitTester.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
+#include <hyprland/src/keybinds/Manager.hpp>
 #include <hyprland/src/desktop/view/LayerSurface.hpp>
 #include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
@@ -60,7 +62,7 @@ static bool anyHoverColor() {
 
 // Caps Lock and Num Lock are locks left on, not keys being held.
 static bool modifiersHeld() {
-    return (g_pInputManager->getModsFromAllKBs() & ~(HL_MODIFIER_CAPS | HL_MODIFIER_MOD2)) != 0;
+    return (g_pInputManager->getModsFromAllKBs() & ~(Input::HL_MODIFIER_CAPS | Input::HL_MODIFIER_MOD2)) != Input::HL_MODIFIER_NONE;
 }
 
 // Scroll Overview draws over the windows without moving them, so a bar still
@@ -239,7 +241,7 @@ bool CHyprBar::focusWindow() {
     if (Desktop::focusState()->window() != PWINDOW)
         return false;
 
-    if (PWINDOW->m_isFloating)
+    if (PWINDOW->isFloating())
         Desktop::windowState()->raise(PWINDOW);
 
     return true;
@@ -457,12 +459,12 @@ void CHyprBar::onTouchMove(Event::SCallbackInfo& info, ITouch::SMotionEvent e) {
 
     if (!m_bDraggingThis) {
         // Initial setup for dragging a window.
-        g_pKeybindManager->m_dispatchers["setfloating"]("activewindow");
-        g_pKeybindManager->m_dispatchers["resizewindowpixel"]("exact 50% 50%,activewindow");
+        (void)Config::Actions::floatWindow(Config::Actions::eTogglableAction::TOGGLE_ACTION_ENABLE, m_pWindow.lock());
+        (void)Config::Actions::resize(PMONITOR->m_size * 0.5, false, m_pWindow.lock());
         // pin it so you can change workspaces while dragging a window
-        g_pKeybindManager->m_dispatchers["pin"]("activewindow");
+        (void)Config::Actions::pinWindow(Config::Actions::eTogglableAction::TOGGLE_ACTION_ENABLE, m_pWindow.lock());
     }
-    g_pKeybindManager->m_dispatchers["movewindowpixel"](std::format("exact {} {},activewindow", (int)(COORDS.x - (assignedBoxGlobal().w / 2)), (int)COORDS.y));
+    (void)Config::Actions::move({COORDS.x - assignedBoxGlobal().w / 2, COORDS.y}, false, m_pWindow.lock());
     m_bDraggingThis = true;
 }
 
@@ -499,9 +501,9 @@ void CHyprBar::handleDownEvent(Event::SCallbackInfo& info, std::optional<ITouch:
 
         if (m_bDraggingThis) {
             if (m_bTouchEv)
-                g_pKeybindManager->m_dispatchers["settiled"]("activewindow");
-            g_pKeybindManager->m_dispatchers["mouse"]("0movewindow");
-            Log::logger->log(Log::DEBUG, "[hyprbars] Dragging ended on {:x}", (uintptr_t)PWINDOW.get());
+                (void)Config::Actions::floatWindow(Config::Actions::eTogglableAction::TOGGLE_ACTION_DISABLE);
+            g_layoutManager->endDragTarget();
+            LOG(Log::DEBUG, "[hyprbars] Dragging ended on {:x}", (uintptr_t)PWINDOW.get());
         }
 
         m_bDraggingThis = false;
@@ -517,7 +519,7 @@ void CHyprBar::handleDownEvent(Event::SCallbackInfo& info, std::optional<ITouch:
     if (Desktop::focusState()->window() != PWINDOW)
         Desktop::focusState()->fullWindowFocus(PWINDOW, Desktop::FOCUS_REASON_CLICK);
 
-    if (PWINDOW->m_isFloating)
+    if (PWINDOW->isFloating())
         Desktop::windowState()->raise(PWINDOW);
 
     info.cancelled   = true;
@@ -546,12 +548,12 @@ void CHyprBar::handleUpEvent(Event::SCallbackInfo& info) {
     m_bCancelledDown = false;
 
     if (m_bDraggingThis) {
-        g_pKeybindManager->changeMouseBindMode(MBIND_INVALID);
+        g_layoutManager->endDragTarget();
         m_bDraggingThis = false;
         if (m_bTouchEv)
             (void)Config::Actions::floatWindow(Config::Actions::eTogglableAction::TOGGLE_ACTION_DISABLE);
 
-        Log::logger->log(Log::DEBUG, "[hyprbars] Dragging ended on {:x}", (uintptr_t)m_pWindow.lock().get());
+        LOG(Log::DEBUG, "[hyprbars] Dragging ended on {:x}", (uintptr_t)m_pWindow.lock().get());
     }
 
     m_bDragPending = false;
@@ -560,9 +562,9 @@ void CHyprBar::handleUpEvent(Event::SCallbackInfo& info) {
 }
 
 void CHyprBar::handleMovement() {
-    g_pKeybindManager->changeMouseBindMode(MBIND_MOVE);
+    g_layoutManager->beginDragTarget(m_pWindow.lock()->layoutTarget(), MBIND_MOVE);
     m_bDraggingThis = true;
-    Log::logger->log(Log::DEBUG, "[hyprbars] Dragging initiated on {:x}", (uintptr_t)m_pWindow.lock().get());
+    LOG(Log::DEBUG, "[hyprbars] Dragging initiated on {:x}", (uintptr_t)m_pWindow.lock().get());
     return;
 }
 
@@ -576,7 +578,7 @@ bool CHyprBar::doButtonPress(Config::INTEGER barPadding, Config::INTEGER barButt
 
         if (VECINRECT(COORDS, currentPos.x, currentPos.y, currentPos.x + b.size + barButtonPadding, currentPos.y + b.size)) {
             // hit on close
-            g_pKeybindManager->m_dispatchers["exec"](b.cmd);
+            Config::Supplementary::executor()->spawn(b.cmd);
             return true;
         }
 
@@ -718,14 +720,14 @@ void CHyprBar::renderBarButtonsText(Render::CRenderContext& ctx, CBox* barBox, c
         noScaleOffset += BARBUTTONPADDING + button.size;
 
         const bool NEEDICON = !button.icon.empty() &&
-            (!button.iconTex || button.iconTex->m_texID == 0 || !button.m_fIconScale.has_value() || std::abs(button.m_fIconScale.value_or(0.F) - scale) > 1e-6);
+            (!button.iconTex || button.iconTex->m_texID == 0 || !iconScale.has_value() || std::abs(iconScale.value_or(0.F) - scale) > 1e-6);
         if (NEEDICON) {
             // render icon
             auto fgcol = button.userfg ? button.fgcol : (button.bgcol.r + button.bgcol.g + button.bgcol.b < 1) ? CHyprColor(0xFFFFFFFF) : CHyprColor(0xFF000000);
 
             button.iconTex =
                 g_pHyprRenderer->renderText(button.icon, fgcol, std::round(button.size * 0.62 * scale), false, g_pGlobalState->config.barTextFont->value(), scaledButtonSize);
-            button.m_fIconScale = scale;
+            iconScale = scale;
         }
 
         if (!button.iconTex || button.iconTex->m_texID == 0)
@@ -807,9 +809,9 @@ void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, cons
     }
 
     const auto PWORKSPACE      = PWINDOW->m_workspace;
-    const auto WORKSPACEOFFSET = PWORKSPACE && !PWINDOW->m_pinned ? PWORKSPACE->m_renderOffset->value() : Vector2D();
+    const auto WORKSPACEOFFSET = PWORKSPACE && !(PWINDOW->m_state & Desktop::View::WINDOW_STATE_PINNED) ? PWORKSPACE->m_renderOffset->value() : Vector2D();
 
-    const auto ROUNDING = PWINDOW->rounding() + (PRECEDENCE ? 0 : PWINDOW->getRealBorderSize());
+    const auto ROUNDING = PWINDOW->presentation().rounding() + (PRECEDENCE ? 0 : PWINDOW->presentation().borderSize());
 
     const auto scaledRounding = ROUNDING > 0 ? ROUNDING * pMonitor->m_scale - 2 /* idk why but otherwise it looks bad due to the gaps */ : 0;
 
@@ -822,7 +824,7 @@ void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, cons
     CBox       titleBarBox = {DECOBOX.x - pMonitor->m_position.x, DECOBOX.y - pMonitor->m_position.y, DECOBOX.w,
                               DECOBOX.h + ROUNDING * 3 /* to fill the bottom cuz we can't disable rounding there */};
 
-    titleBarBox.translate(PWINDOW->m_floatingOffset).scale(pMonitor->m_scale).round();
+    titleBarBox.translate(PWINDOW->presentation().floatingOffset()).scale(pMonitor->m_scale).round();
 
     if (titleBarBox.w < 1 || titleBarBox.h < 1)
         return;
@@ -831,8 +833,8 @@ void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, cons
 
     if (ROUNDING) {
         // the +1 is a shit garbage temp fix until renderRect supports an alpha matte
-        CBox windowBox = {PWINDOW->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT).x + PWINDOW->m_floatingOffset.x - pMonitor->m_position.x + 1,
-                          PWINDOW->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT).y + PWINDOW->m_floatingOffset.y - pMonitor->m_position.y + 1,
+        CBox windowBox = {PWINDOW->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT).x + PWINDOW->presentation().floatingOffset().x - pMonitor->m_position.x + 1,
+                          PWINDOW->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT).y + PWINDOW->presentation().floatingOffset().y - pMonitor->m_position.y + 1,
                           PWINDOW->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT).x - 2, PWINDOW->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT).y - 2};
 
         if (windowBox.w < 1 || windowBox.h < 1)
@@ -897,7 +899,7 @@ void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, cons
             buttonSizes += b.size + BARBUTTONPADDING;
         }
 
-        const auto scaledBorderSize  = PWINDOW->getRealBorderSize() * pMonitor->m_scale;
+        const auto scaledBorderSize  = PWINDOW->presentation().borderSize() * pMonitor->m_scale;
         const auto scaledButtonsSize = buttonSizes * pMonitor->m_scale;
         const auto scaledBarPadding  = BARPADDING * pMonitor->m_scale;
         const auto xOffset           = ALIGN == "left" ? std::round(scaledBarPadding + (BUTTONSRIGHT ? 0 : scaledButtonsSize)) :
@@ -966,7 +968,7 @@ CBox CHyprBar::assignedBoxGlobal() {
     box.translate(g_pDecorationPositioner->getEdgeDefinedPoint(DECORATION_EDGE_TOP, m_pWindow.lock()));
 
     const auto PWORKSPACE      = m_pWindow->m_workspace;
-    const auto WORKSPACEOFFSET = PWORKSPACE && !m_pWindow->m_pinned ? PWORKSPACE->m_renderOffset->value() : Vector2D();
+    const auto WORKSPACEOFFSET = PWORKSPACE && !(m_pWindow->m_state & Desktop::View::WINDOW_STATE_PINNED) ? PWORKSPACE->m_renderOffset->value() : Vector2D();
 
     return box.translate(WORKSPACEOFFSET);
 }
@@ -1074,7 +1076,7 @@ CRegion CHyprBar::buttonsPopClip(const CBox& barBox) {
     // A button that starts past the bar's edge would leave pixels where the
     // bar never damages again, so nothing may be drawn outside the bar.
     CRegion clip{barBox};
-    g_pHyprRenderer->m_renderData.renderModif.applyToRegion(clip);
-    clip.intersect(g_pHyprRenderer->m_renderData.damage);
+    g_pHyprRenderer->context().m_data.renderModif.applyToRegion(clip);
+    clip.intersect(g_pHyprRenderer->context().m_data.damage);
     return clip;
 }
